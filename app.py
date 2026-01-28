@@ -2,295 +2,394 @@ from flask import Flask, render_template_string, jsonify, request, send_file
 import pandas as pd
 import io
 import re
+import random
 from datetime import datetime
 
 app = Flask(__name__)
 
-# --- GLOBAL STORAGE (Shared by File Upload & ESP32) ---
+# --- GLOBAL DATA STORE ---
 current_data = {
     "aqi": 0, "pm25": 0, "pm10": 0, "no2": 0, "so2": 0, "co": 0,
-    "status": "Waiting for Data...", 
-    "health_risks": [], 
-    "chart_data": {"pm25":[], "pm10":[], "no2":[], "so2":[], "gps":[]},
-    "esp32_log": ["> System Initialized...", "> Waiting for drone telemetry..."]
+    "status": "Waiting...",
+    "health_risks": [],
+    "chart_data": {"pm25":[], "pm10":[], "no2":[], "so2":[], "co":[]},
+    "esp32_log": ["> System Ready...", "> Waiting for connection..."],
+    "last_updated": "Never"
 }
 
-# --- HEALTH ENGINE FUNCTION ---
-def calculate_risks(val):
+# --- HEALTH ENGINE (Advanced Probability Model) ---
+def calculate_advanced_health(val):
     risks = []
-    # 1. PM2.5 CRITICAL
-    if val['pm25'] > 150:
-        risks.append({
-            "name": "Severe Respiratory Distress (PM2.5)", "level": "CRITICAL", "color": "#dc2626",
-            "precautions": [
-                "Wear an N95/P100 respirator mask immediately.",
-                "Evacuate to an indoor area with HEPA air filtration.",
-                "Seal windows and doors to prevent ingress of particulates.",
-                "Avoid all physical exertion; heart and lung strain is likely."
-            ]
-        })
-    elif val['pm25'] > 50:
-        risks.append({
-            "name": "Respiratory Irritation Risk (PM2.5)", "level": "HIGH", "color": "#f97316",
-            "precautions": [
-                "Sensitive groups (Asthma/COPD) must stay indoors.",
-                "Wear a standard pollution mask if outside for >30 mins.",
-                "Run air purifiers on high mode.",
-                "Keep inhalers and emergency medication accessible."
-            ]
-        })
+    
+    # 1. Asthma & Allergies Logic
+    asthma_prob = min(100, int((val['pm25'] / 35) * 20 + (val['pm10'] / 50) * 10))
+    risks.append({
+        "name": "Asthma & Allergies",
+        "prob": asthma_prob,
+        "level": "High" if asthma_prob > 50 else "Moderate" if asthma_prob > 20 else "Low",
+        "symptoms": ["Wheezing", "Coughing", "Runny nose", "Itchy eyes"],
+        "recs": ["Keep rescue inhaler handy", "Stay indoors during high pollution", "Use air purifier"]
+    })
 
-    # 2. PM10 DANGER
-    if val['pm10'] > 250:
-        risks.append({
-            "name": "Heavy Particulate Load (PM10)", "level": "HIGH", "color": "#ea580c",
-            "precautions": [
-                "Wear protective eyewear to prevent corneal abrasion.",
-                "Cover exposed skin to avoid contact dermatitis.",
-                "Avoid construction zones or dusty unpaved roads.",
-                "Drink plenty of water to help clear throat irritation."
-            ]
-        })
+    # 2. Cardiovascular Logic
+    cardio_prob = min(100, int((val['pm25'] / 35) * 15 + (val['co'] / 4) * 20))
+    risks.append({
+        "name": "Cardiovascular Diseases",
+        "prob": cardio_prob,
+        "level": "High" if cardio_prob > 50 else "Moderate" if cardio_prob > 20 else "Low",
+        "symptoms": ["Chest pain", "Irregular heartbeat", "Fatigue", "Dizziness"],
+        "recs": ["Monitor blood pressure", "Avoid strenuous outdoor exercise", "Consult cardiologist"]
+    })
 
-    # 3. CARBON MONOXIDE (The Silent Killer)
-    if val['co'] > 20:
-        risks.append({
-            "name": "Carbon Monoxide Poisoning Risk", "level": "DANGER", "color": "#991b1b",
-            "precautions": [
-                "Move to fresh air immediately (Do not wait).",
-                "Check pulse and blood oxygen levels if dizziness occurs.",
-                "Extinguish all open flames or combustion engines nearby.",
-                "Seek emergency medical attention if confusion or headache persists."
-            ]
-        })
-
-    # 4. CHEMICAL TOXICITY (NO2 / SO2)
-    if val['no2'] > 100 or val['so2'] > 100:
-        risks.append({
-            "name": "Acidic Gas Toxicity (NO₂/SO₂)", "level": "HIGH", "color": "#ef4444",
-            "precautions": [
-                "Avoid deep breathing; gases can scar lung tissue.",
-                "Wash eyes thoroughly with saline if burning sensation occurs.",
-                "Move upwind from traffic or industrial smoke sources.",
-                "Monitor for wheezing or shortness of breath."
-            ]
-        })
-
-    # 5. SAFE STATE
-    if not risks:
-        risks.append({
-            "name": "Optimal Air Quality", "level": "SAFE", "color": "#16a34a",
-            "precautions": [
-                "Air quality is safe for outdoor activities.",
-                "Ventilate indoor spaces by opening windows.",
-                "Great conditions for drone calibration flights.",
-                "Continue routine monitoring to maintain safety."
-            ]
-        })
+    # 3. Respiratory Logic
+    resp_prob = min(100, int((val['no2'] / 40) * 30 + (val['so2'] / 20) * 20))
+    risks.append({
+        "name": "Respiratory Infections",
+        "prob": resp_prob,
+        "level": "High" if resp_prob > 50 else "Moderate" if resp_prob > 20 else "Low",
+        "symptoms": ["Shortness of breath", "Throat irritation", "Lung inflammation"],
+        "recs": ["Wear N95 mask outdoors", "Avoid traffic-heavy areas", "Hydrate frequently"]
+    })
+    
     return risks
 
-# --- THE FRONTEND ---
+# --- THE "ATOMS" UI TEMPLATE (Exact Replica) ---
 HTML_TEMPLATE = """
 <!DOCTYPE html>
 <html lang="en">
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>SkySense | Mission Control</title>
-    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;600;800&display=swap" rel="stylesheet">
+    <title>SkySense | Autonomous Air Quality</title>
+    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap" rel="stylesheet">
     <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.4.0/css/all.min.css">
     <script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
     <style>
-        :root { --primary: #2563eb; --bg: #f8fafc; --text: #0f172a; }
+        :root { --primary: #3b82f6; --bg: #f3f4f6; --card: #ffffff; --text: #111827; --text-light: #6b7280; --border: #e5e7eb; }
         * { box-sizing: border-box; margin: 0; padding: 0; }
-        body { font-family: 'Inter', sans-serif; background: var(--bg); color: var(--text); overflow-x: hidden; }
-        .sidebar { position: fixed; width: 260px; height: 100vh; background: #fff; padding: 30px; border-right: 1px solid #e2e8f0; z-index: 1000; }
-        .logo { font-size: 1.6rem; font-weight: 800; color: var(--primary); margin-bottom: 40px; display: flex; align-items: center; gap: 10px; }
-        .nav-link { display: flex; align-items: center; gap: 12px; padding: 16px; color: #64748b; text-decoration: none; font-weight: 600; border-radius: 12px; margin-bottom: 8px; transition: 0.2s; }
-        .nav-link:hover, .nav-link.active { background: #eff6ff; color: var(--primary); }
-        .main { margin-left: 260px; }
-        .slide { min-height: 100vh; padding: 60px; border-bottom: 1px solid #e2e8f0; display: flex; flex-direction: column; justify-content: center; }
-        .grid-2 { display: grid; grid-template-columns: 1fr 1fr; gap: 30px; }
-        .card { background: #fff; padding: 25px; border-radius: 20px; box-shadow: 0 4px 6px -1px rgba(0,0,0,0.05); }
-        .aqi-box { background: linear-gradient(135deg, #2563eb, #1e40af); color: white; padding: 40px; border-radius: 20px; text-align: center; }
-        .aqi-val { font-size: 6rem; font-weight: 800; line-height: 1; margin: 20px 0; }
-        .console { background: #1e293b; color: #4ade80; font-family: monospace; padding: 20px; border-radius: 12px; height: 250px; overflow-y: auto; }
-        .chart-container { position: relative; height: 300px; width: 100%; }
-        .upload-zone { border: 3px dashed #cbd5e1; padding: 40px; text-align: center; border-radius: 20px; cursor: pointer; background: #fff; transition: 0.3s; }
+        body { font-family: 'Inter', sans-serif; background: var(--bg); color: var(--text); padding: 20px; }
+        
+        .container { max-width: 1200px; margin: 0 auto; }
+        
+        /* HEADER */
+        .header { display: flex; justify-content: space-between; align-items: center; margin-bottom: 20px; }
+        .logo { font-size: 1.5rem; font-weight: 700; color: var(--primary); display: flex; align-items: center; gap: 8px; }
+        .refresh-btn { background: #111827; color: white; border: none; padding: 8px 16px; border-radius: 6px; cursor: pointer; font-size: 0.9rem; }
+
+        /* ALERT BANNER */
+        .alert-banner { background: #fffbeb; border: 1px solid #fcd34d; color: #92400e; padding: 20px; border-radius: 12px; margin-bottom: 25px; }
+        .alert-title { font-weight: 700; display: flex; align-items: center; gap: 8px; margin-bottom: 8px; }
+        .alert-badge { background: #fcd34d; color: #78350f; font-size: 0.75rem; padding: 2px 8px; border-radius: 12px; }
+        .rec-list { list-style: none; margin-top: 10px; font-size: 0.95rem; line-height: 1.6; }
+        .rec-list li::before { content: "•"; color: #3b82f6; margin-right: 8px; }
+
+        /* TABS */
+        .tabs { display: flex; gap: 5px; background: white; padding: 5px; border-radius: 12px; margin-bottom: 25px; box-shadow: 0 1px 3px rgba(0,0,0,0.05); }
+        .tab-btn { flex: 1; border: none; background: transparent; padding: 12px; font-weight: 600; color: var(--text-light); cursor: pointer; border-radius: 8px; transition: 0.2s; text-align: center; }
+        .tab-btn:hover { background: #f9fafb; }
+        .tab-btn.active { background: #fff; color: var(--primary); box-shadow: 0 2px 4px rgba(0,0,0,0.05); border: 1px solid var(--border); }
+        .tab-btn i { margin-right: 6px; }
+
+        /* CONTENT SECTIONS */
+        .section { display: none; }
+        .section.active { display: block; }
+
+        /* CARDS & GRID */
+        .grid-2 { display: grid; grid-template-columns: 1fr 1fr; gap: 20px; }
+        @media(max-width: 768px) { .grid-2 { grid-template-columns: 1fr; } }
+        .card { background: var(--card); border-radius: 16px; padding: 25px; border: 1px solid var(--border); box-shadow: 0 1px 2px rgba(0,0,0,0.05); height: 100%; }
+        .card h3 { font-size: 1.1rem; margin-bottom: 20px; font-weight: 700; }
+
+        /* OVERVIEW STYLES */
+        .aqi-display { text-align: center; margin-bottom: 30px; }
+        .aqi-num { font-size: 5rem; font-weight: 800; color: #ea580c; line-height: 1; }
+        .aqi-label { color: var(--text-light); margin-top: 5px; }
+        .pollutant-row { margin-bottom: 15px; }
+        .p-header { display: flex; justify-content: space-between; font-size: 0.9rem; font-weight: 600; margin-bottom: 5px; }
+        .p-bar-bg { background: #f3f4f6; height: 8px; border-radius: 10px; overflow: hidden; }
+        .p-bar-fill { height: 100%; background: #111827; width: 0%; transition: width 1s; }
+
+        /* HEALTH SUMMARY */
+        .stat-box { background: #eff6ff; padding: 15px; border-radius: 10px; text-align: center; flex: 1; }
+        .stat-val { font-size: 1.5rem; font-weight: 700; color: var(--primary); }
+        .risk-row { display: flex; justify-content: space-between; padding: 12px 0; border-bottom: 1px solid var(--border); font-size: 0.95rem; }
+        .risk-row:last-child { border-bottom: none; }
+
+        /* DISEASE REPORTS */
+        .disease-card { margin-bottom: 20px; border-left: 5px solid #3b82f6; }
+        .prob-bar { height: 6px; background: #e5e7eb; border-radius: 4px; margin: 10px 0; }
+        .prob-fill { height: 100%; background: #3b82f6; border-radius: 4px; }
+        .tag { display: inline-block; background: #f3f4f6; padding: 4px 10px; border-radius: 20px; font-size: 0.8rem; margin-right: 5px; color: #4b5563; }
+
+        /* ESP32 & UPLOAD */
+        .console { background: #1f2937; color: #4ade80; padding: 20px; border-radius: 8px; font-family: monospace; height: 200px; overflow-y: auto; margin-top: 15px; }
+        .upload-zone { border: 2px dashed #d1d5db; padding: 50px; text-align: center; border-radius: 12px; cursor: pointer; background: #f9fafb; transition: 0.2s; }
         .upload-zone:hover { border-color: var(--primary); background: #eff6ff; }
-        .btn-download { display: inline-block; background: #0f172a; color: white; padding: 15px 30px; border-radius: 12px; text-decoration: none; font-weight: 600; margin-top: 20px; }
-        @media(max-width: 900px) { .sidebar { width: 100%; height: auto; position: relative; } .main { margin-left: 0; } .grid-2 { grid-template-columns: 1fr; } }
+
+        /* EXPORT */
+        .report-summary-row { display: flex; justify-content: space-between; padding: 15px 0; border-bottom: 1px solid #f3f4f6; }
+        .btn-black { background: #111827; color: white; border: none; padding: 12px 20px; border-radius: 8px; width: 100%; font-weight: 600; cursor: pointer; text-decoration: none; display: inline-block; text-align: center; }
+        
+        .footer { text-align: center; margin-top: 40px; font-size: 0.8rem; color: #9ca3af; }
     </style>
 </head>
 <body>
-    <nav class="sidebar">
+
+<div class="container">
+    <div class="header">
         <div class="logo"><i class="fa-solid fa-drone"></i> SkySense</div>
-        <a href="#overview" class="nav-link"><i class="fa-solid fa-chart-pie"></i> Overview</a>
-        <a href="#charts" class="nav-link"><i class="fa-solid fa-chart-area"></i> GPS Analytics</a>
-        <a href="#health" class="nav-link"><i class="fa-solid fa-heart-pulse"></i> Health Risks</a>
-        <a href="#esp32" class="nav-link"><i class="fa-solid fa-wifi"></i> Drone Link</a>
-        <a href="#report" class="nav-link"><i class="fa-solid fa-file-export"></i> Report & Data</a>
-    </nav>
-
-    <div class="main">
-        <section id="overview" class="slide">
-            <h1 style="font-size:2.5rem; font-weight:800; margin-bottom:10px;">Mission Overview</h1>
-            <div class="grid-2">
-                <div class="aqi-box">
-                    <h3>AIR QUALITY INDEX</h3>
-                    <div class="aqi-val" id="aqi-val">--</div>
-                    <span style="background:rgba(255,255,255,0.2); padding:5px 15px; border-radius:20px;" id="status-badge">Waiting...</span>
-                </div>
-                <div class="card">
-                    <h3>Pollutant Breakdown</h3>
-                    <table style="width:100%; margin-top:20px; font-size:1.1rem;">
-                        <tr><td style="padding:10px 0;">PM 2.5</td><td style="font-weight:bold; text-align:right;" id="val-pm25">--</td></tr>
-                        <tr><td style="padding:10px 0;">PM 10</td><td style="font-weight:bold; text-align:right;" id="val-pm10">--</td></tr>
-                        <tr><td style="padding:10px 0;">NO₂</td><td style="font-weight:bold; text-align:right;" id="val-no2">--</td></tr>
-                        <tr><td style="padding:10px 0;">SO₂</td><td style="font-weight:bold; text-align:right;" id="val-so2">--</td></tr>
-                        <tr><td style="padding:10px 0;">CO</td><td style="font-weight:bold; text-align:right;" id="val-co">--</td></tr>
-                    </table>
-                </div>
-            </div>
-        </section>
-
-        <section id="charts" class="slide">
-             <h1 style="font-size:2.5rem; font-weight:800; margin-bottom:10px;">Flight Analytics</h1>
-             <div class="grid-2" style="margin-bottom:30px;">
-                <div class="card"><div class="chart-container"><canvas id="chart-pm25"></canvas></div></div>
-                <div class="card"><div class="chart-container"><canvas id="chart-pm10"></canvas></div></div>
-             </div>
-             <div class="grid-2">
-                <div class="card"><div class="chart-container"><canvas id="chart-no2"></canvas></div></div>
-                <div class="card"><div class="chart-container"><canvas id="chart-so2"></canvas></div></div>
-             </div>
-        </section>
-        
-        <section id="health" class="slide">
-            <h1 style="font-size:2.5rem; font-weight:800; margin-bottom:10px;">Health Risk Assessment</h1>
-            <div id="risk-container" class="grid-2">
-                <div class="card" style="grid-column: span 2; text-align: center; color: #94a3b8;">
-                    <i class="fa-solid fa-user-doctor" style="font-size:3rem; margin-bottom:15px;"></i>
-                    <p>Upload data or connect drone to see analysis.</p>
-                </div>
-            </div>
-        </section>
-
-        <section id="esp32" class="slide" style="background:#1e293b; color:white;">
-            <h1 style="font-size:2.5rem; font-weight:800; margin-bottom:10px;">Drone Link (ESP32)</h1>
-            <div class="grid-2">
-                <div class="card" style="background:#0f172a; border:1px solid #334155; color:white;">
-                    <h3>📡 Connection Info</h3>
-                    <p style="margin-top:15px;"><strong>Status:</strong> <span style="color:#4ade80;">● Active Listener</span></p>
-                    <p><strong>Endpoint:</strong> <code>/api/upload_sensor</code></p>
-                </div>
-                <div class="card" style="background:#0f172a; border:1px solid #334155; color:white;">
-                    <h3>🚀 Live Logs</h3>
-                    <div class="console" id="esp-console"></div>
-                </div>
-            </div>
-        </section>
-
-        <section id="report" class="slide">
-            <h1 style="font-size:2.5rem; font-weight:800; margin-bottom:10px;">Mission Report & Data</h1>
-            <div class="grid-2">
-                <div class="card">
-                    <h3>Option 1: Upload Data</h3>
-                    <label class="upload-zone" style="margin-top:15px; display:block;">
-                        <i class="fa-solid fa-cloud-arrow-up" style="font-size: 2rem; color: #cbd5e1;"></i>
-                        <p id="upload-text" style="margin-top:10px;">Select CSV / Excel File</p>
-                        <input type="file" id="fileInput" style="display:none;">
-                    </label>
-                </div>
-                <div class="card" style="text-align:center;">
-                    <h3>Option 2: Generate Report</h3>
-                    <p style="color:#64748b; margin:15px 0;">Download full PDF-ready mission summary.</p>
-                    <a href="/export" class="btn-download"><i class="fa-solid fa-file-pdf"></i> Download Report</a>
-                </div>
-            </div>
-        </section>
+        <button class="refresh-btn" onclick="location.reload()"><i class="fa-solid fa-rotate"></i> Refresh Data</button>
     </div>
 
-    <script>
-        // --- POLLING FOR UPDATES (For ESP32 Live View) ---
-        setInterval(() => {
-            fetch('/api/data').then(res => res.json()).then(data => {
-                updateUI(data);
-            });
-        }, 3000);
+    <div class="alert-banner">
+        <div class="alert-title">
+            <i class="fa-solid fa-circle-info"></i> Health Alert 
+            <span class="alert-badge" id="aqi-badge">AQI --</span>
+        </div>
+        <div id="alert-msg">Waiting for data analysis...</div>
+        <ul class="rec-list" id="main-recs"></ul>
+    </div>
 
-        // --- FILE UPLOAD LOGIC ---
-        document.getElementById('fileInput').addEventListener('change', async (e) => {
-            const file = e.target.files[0];
-            if(!file) return;
-            const text = document.getElementById('upload-text');
-            text.innerText = "Processing...";
-            const formData = new FormData();
-            formData.append('file', file);
-            
-            try {
-                const res = await fetch('/upload', { method: 'POST', body: formData });
-                const data = await res.json();
-                if(data.error) { alert(data.error); text.innerText = "Failed"; }
-                else { text.innerText = "Success!"; updateUI(data.data); window.location.hash = "#overview"; }
-            } catch(err) { alert(err); }
+    <div class="tabs">
+        <button class="tab-btn active" onclick="switchTab('overview')"><i class="fa-solid fa-chart-pie"></i> Overview</button>
+        <button class="tab-btn" onclick="switchTab('charts')"><i class="fa-solid fa-chart-simple"></i> Charts</button>
+        <button class="tab-btn" onclick="switchTab('disease')"><i class="fa-solid fa-notes-medical"></i> Disease Reports</button>
+        <button class="tab-btn" onclick="switchTab('esp32')"><i class="fa-solid fa-wifi"></i> ESP32</button>
+        <button class="tab-btn" onclick="switchTab('upload')"><i class="fa-solid fa-upload"></i> Upload</button>
+        <button class="tab-btn" onclick="switchTab('export')"><i class="fa-solid fa-file-export"></i> Export</button>
+    </div>
+
+    <div id="overview" class="section active">
+        <div class="grid-2">
+            <div class="card">
+                <h3>Air Quality Index</h3>
+                <div class="aqi-display">
+                    <div class="aqi-num" id="aqi-val">--</div>
+                    <div class="aqi-label">Sensitive individuals may experience effects</div>
+                </div>
+                <h3>Pollutant Levels</h3>
+                <div id="pollutant-bars">
+                    </div>
+                <div style="font-size:0.8rem; color:#9ca3af; margin-top:20px;">Last updated: <span id="last-update">--</span></div>
+            </div>
+
+            <div class="card">
+                <h3>Quick Health Summary</h3>
+                <div style="display:flex; gap:15px; margin-bottom:25px;">
+                    <div class="stat-box">
+                        <div class="stat-val" id="aqi-score-box">--</div>
+                        <div style="font-size:0.8rem; color:#6b7280;">AQI Score</div>
+                    </div>
+                    <div class="stat-box" style="background:#fff7ed;">
+                        <div class="stat-val" style="color:#ea580c;" id="risk-count">--</div>
+                        <div style="font-size:0.8rem; color:#6b7280;">Risk Factors</div>
+                    </div>
+                </div>
+                <h3>Top Health Concerns:</h3>
+                <div id="quick-risks">
+                    </div>
+            </div>
+        </div>
+    </div>
+
+    <div id="charts" class="section">
+        <div class="card">
+            <h3>Pollutant Concentrations</h3>
+            <div style="height:400px;"><canvas id="mainChart"></canvas></div>
+        </div>
+    </div>
+
+    <div id="disease" class="section">
+        <div class="card" style="background:transparent; border:none; box-shadow:none; padding:0;">
+            <h3>Disease Risk Assessment</h3>
+            <div id="disease-container">
+                </div>
+        </div>
+    </div>
+
+    <div id="esp32" class="section">
+        <div class="card">
+            <div style="display:flex; justify-content:space-between; align-items:center;">
+                <h3><i class="fa-solid fa-microchip"></i> ESP32 Connection</h3>
+                <span style="background:#dcfce7; color:#166534; padding:4px 10px; border-radius:20px; font-size:0.85rem;">● Active Listener</span>
+            </div>
+            <div style="background:#f3f4f6; padding:20px; border-radius:12px; margin-top:20px;">
+                <strong>⚡ ESP32 Setup Instructions:</strong>
+                <ol style="margin:10px 0 0 20px; font-size:0.9rem; color:#4b5563; line-height:1.6;">
+                    <li>Connect ESP32 to WiFi.</li>
+                    <li>Flash code to send POST request to <code>/api/upload_sensor</code>.</li>
+                    <li>Ensure JSON format: <code>{"pm25": 25.5, "pm10": 45.2 ...}</code></li>
+                </ol>
+            </div>
+            <div class="console" id="esp-console">
+                > System Initialized...
+            </div>
+        </div>
+    </div>
+
+    <div id="upload" class="section">
+        <div class="card">
+            <h3><i class="fa-solid fa-file-csv"></i> File Upload & SD Card Data</h3>
+            <p style="color:#6b7280; margin-bottom:20px;">Upload CSV or Excel files containing air quality data.</p>
+            <label class="upload-zone">
+                <i class="fa-solid fa-cloud-arrow-up" style="font-size: 2.5rem; color: #9ca3af; margin-bottom:15px;"></i>
+                <div id="upload-text" style="font-weight:600;">Click to Browse Files</div>
+                <input type="file" id="fileInput" style="display:none;">
+            </label>
+        </div>
+    </div>
+
+    <div id="export" class="section">
+        <div class="card">
+            <h3><i class="fa-solid fa-file-arrow-down"></i> Export Report</h3>
+            <div style="background:#f9fafb; padding:20px; border-radius:12px; border:1px solid #e5e7eb; margin-bottom:20px;">
+                <div class="report-summary-row"><span>Report Date</span><strong><script>document.write(new Date().toLocaleDateString())</script></strong></div>
+                <div class="report-summary-row"><span>AQI Score</span><strong id="rep-aqi">--</strong></div>
+                <div class="report-summary-row"><span>Highest Risk</span><strong id="rep-risk">--</strong></div>
+                <div class="report-summary-row"><span>Pollutant Levels</span><strong id="rep-pol">--</strong></div>
+            </div>
+            <a href="/export" class="btn-black"><i class="fa-solid fa-download"></i> Download Full Report</a>
+        </div>
+    </div>
+
+    <div class="footer">Made by SkySense Team | <i class="fa-brands fa-github"></i> v1.0.4</div>
+</div>
+
+<script>
+    // --- UI LOGIC ---
+    function switchTab(tabId) {
+        document.querySelectorAll('.section').forEach(el => el.classList.remove('active'));
+        document.getElementById(tabId).classList.add('active');
+        document.querySelectorAll('.tab-btn').forEach(el => el.classList.remove('active'));
+        document.querySelector(`button[onclick="switchTab('${tabId}')"]`).classList.add('active');
+    }
+
+    // --- DATA FETCHING ---
+    setInterval(() => {
+        fetch('/api/data').then(res => res.json()).then(data => updateUI(data));
+    }, 3000);
+
+    // --- UPLOAD ---
+    document.getElementById('fileInput').addEventListener('change', async (e) => {
+        const file = e.target.files[0];
+        if(!file) return;
+        const txt = document.getElementById('upload-text');
+        txt.innerText = "Uploading...";
+        const fd = new FormData(); fd.append('file', file);
+        try {
+            const res = await fetch('/upload', { method: 'POST', body: fd });
+            const d = await res.json();
+            if(d.error) alert(d.error);
+            else { txt.innerText = "Success!"; updateUI(d.data); setTimeout(()=>switchTab('overview'), 500); }
+        } catch(e) { alert(e); }
+    });
+
+    let mainChart = null;
+
+    function updateUI(data) {
+        // 1. OVERVIEW
+        document.getElementById('aqi-val').innerText = data.aqi;
+        document.getElementById('aqi-badge').innerText = `AQI ${data.aqi}`;
+        document.getElementById('aqi-score-box').innerText = data.aqi;
+        document.getElementById('risk-count').innerText = data.health_risks.length;
+        document.getElementById('last-update').innerText = data.last_updated;
+        document.getElementById('alert-msg').innerText = data.aqi > 100 ? "Air quality is unhealthy for sensitive groups." : "Air quality is acceptable.";
+
+        // Pollutant Bars
+        const pContainer = document.getElementById('pollutant-bars');
+        pContainer.innerHTML = '';
+        ['pm25','pm10','no2','so2','co'].forEach(k => {
+            const val = data[k];
+            const max = k==='co'? 10 : 150; 
+            const pct = Math.min((val/max)*100, 100);
+            pContainer.innerHTML += `
+            <div class="pollutant-row">
+                <div class="p-header"><span>${k.toUpperCase().replace('2', '₂')}</span><span>${val} µg/m³</span></div>
+                <div class="p-bar-bg"><div class="p-bar-fill" style="width:${pct}%"></div></div>
+            </div>`;
         });
 
-        // --- CENTRAL UPDATE FUNCTION ---
-        function updateUI(data) {
-            document.getElementById('aqi-val').innerText = data.aqi;
-            document.getElementById('status-badge').innerText = data.status;
-            ['pm25','pm10','no2','so2','co'].forEach(k => {
-                if(document.getElementById('val-'+k)) document.getElementById('val-'+k).innerText = data[k];
-            });
+        // Quick Risks
+        const qContainer = document.getElementById('quick-risks');
+        qContainer.innerHTML = '';
+        data.health_risks.forEach(r => {
+            qContainer.innerHTML += `<div class="risk-row"><span>${r.name}</span><strong>${r.prob}%</strong></div>`;
+        });
 
-            // Console
-            const con = document.getElementById('esp-console');
-            con.innerHTML = data.esp32_log.join('<br>');
-            con.scrollTop = con.scrollHeight;
-
-            // Risks
-            const rc = document.getElementById('risk-container');
-            rc.innerHTML = '';
-            if(data.health_risks.length > 0) {
-                data.health_risks.forEach(r => {
-                    rc.innerHTML += `
-                    <div class="card" style="border-left:5px solid ${r.color};">
-                        <h3 style="color:${r.color}; margin-bottom:5px;">${r.name}</h3>
-                        <p style="margin-bottom:10px;"><strong>Severity:</strong> <span style="background:${r.color}; color:white; padding:2px 8px; border-radius:4px;">${r.level}</span></p>
-                        <strong style="display:block; margin-bottom:5px;">Precautions:</strong>
-                        <ul style="padding-left:20px; color:#475569;">${r.precautions.map(p=>`<li style="margin-bottom:4px;">${p}</li>`).join('')}</ul>
-                    </div>`;
-                });
-            } else { rc.innerHTML = '<div class="card"><h3 style="color:green;">✅ No Risks Detected.</h3></div>'; }
-            
-            // Charts
-            renderChart('chart-pm25', 'PM 2.5', data.chart_data.pm25, data.chart_data.gps, '#2563eb');
-            renderChart('chart-pm10', 'PM 10', data.chart_data.pm10, data.chart_data.gps, '#0ea5e9');
-            renderChart('chart-no2', 'NO2', data.chart_data.no2, data.chart_data.gps, '#f59e0b');
-            renderChart('chart-so2', 'SO2', data.chart_data.so2, data.chart_data.gps, '#ef4444');
+        // Main Recommendations
+        const recList = document.getElementById('main-recs');
+        recList.innerHTML = '';
+        if(data.health_risks.length > 0) {
+             data.health_risks[0].recs.forEach(r => recList.innerHTML += `<li>${r}</li>`);
+        } else {
+             recList.innerHTML = "<li>Generally safe for outdoor activities.</li>";
         }
 
-        function renderChart(id, label, data, gps, color) {
-            new Chart(document.getElementById(id), {
-                type: 'line',
-                data: { labels: data.map((_, i) => i+1), datasets: [{ label: label, data: data, borderColor: color, fill: true, backgroundColor: color+'10' }] },
-                options: { responsive: true, maintainAspectRatio: false, plugins: { legend: {display:false}, title: {display:true, text:label} }, scales: {x:{display:false}} }
+        // 2. CHARTS
+        if(data.chart_data.pm25.length > 0) {
+            const ctx = document.getElementById('mainChart').getContext('2d');
+            if(mainChart) mainChart.destroy();
+            mainChart = new Chart(ctx, {
+                type: 'bar',
+                data: {
+                    labels: ['PM2.5', 'PM10', 'NO₂', 'SO₂', 'CO'],
+                    datasets: [{
+                        label: 'Current Concentration',
+                        data: [data.pm25, data.pm10, data.no2, data.so2, data.co],
+                        backgroundColor: ['#fbbf24', '#fbbf24', '#fbbf24', '#fbbf24', '#34d399']
+                    }]
+                },
+                options: { responsive: true, maintainAspectRatio: false }
             });
         }
-    </script>
+
+        // 3. DISEASE REPORTS
+        const dContainer = document.getElementById('disease-container');
+        dContainer.innerHTML = '';
+        data.health_risks.forEach(r => {
+            dContainer.innerHTML += `
+            <div class="card disease-card" style="border-color:${r.level==='High'?'#ef4444':'#3b82f6'}">
+                <div style="display:flex; justify-content:space-between;">
+                    <h3>${r.name}</h3>
+                    <span style="background:${r.level==='High'?'#fee2e2':'#dbeafe'}; color:${r.level==='High'?'#991b1b':'#1e40af'}; padding:2px 8px; border-radius:12px; font-size:0.8rem; height:fit-content;">${r.level}</span>
+                </div>
+                <div style="font-size:0.9rem; margin-bottom:5px;">Risk Probability: <strong>${r.prob}%</strong></div>
+                <div class="prob-bar"><div class="prob-fill" style="width:${r.prob}%; background:${r.level==='High'?'#ef4444':'#3b82f6'}"></div></div>
+                <div style="margin-top:10px;">
+                    ${r.symptoms.map(s => `<span class="tag">${s}</span>`).join('')}
+                </div>
+                <div style="margin-top:15px; font-size:0.9rem;">
+                    <strong>Recommendations:</strong>
+                    <ul style="padding-left:20px; margin-top:5px; color:#4b5563;">
+                        ${r.recs.map(rec => `<li>${rec}</li>`).join('')}
+                    </ul>
+                </div>
+            </div>`;
+        });
+
+        // 4. ESP32 CONSOLE
+        document.getElementById('esp-console').innerHTML = data.esp32_log.join('<br>');
+        
+        // 5. EXPORT SUMMARY
+        document.getElementById('rep-aqi').innerText = data.aqi;
+        document.getElementById('rep-risk').innerText = data.health_risks.length > 0 ? data.health_risks[0].name : "None";
+        document.getElementById('rep-pol').innerText = `PM2.5: ${data.pm25}`;
+    }
+</script>
 </body>
 </html>
 """
 
-# --- BACKEND LOGIC ---
+# --- BACKEND ROUTES ---
+
 @app.route('/')
-def home(): return render_template_string(HTML_TEMPLATE)
+def home():
+    return render_template_string(HTML_TEMPLATE)
 
 @app.route('/api/data')
-def get_data(): return jsonify(current_data)
+def get_data():
+    return jsonify(current_data)
 
-# --- 1. UPLOAD HANDLER ---
 @app.route('/upload', methods=['POST'])
 def upload_file():
     global current_data
@@ -301,96 +400,61 @@ def upload_file():
         elif file.filename.endswith(('.xlsx', '.xls')): df = pd.read_excel(file)
         else: return jsonify({"error": "Invalid file"}), 400
 
-        # Process columns
+        # Process Data
         df.columns = [re.sub(r'[^a-z0-9]', '', c.lower()) for c in df.columns]
-        mapper = {'pm25':'pm25', 'pm10':'pm10', 'no2':'no2', 'so2':'so2', 'co':'co', 'lat':'lat', 'latitude':'lat', 'lon':'lon', 'longitude':'lon'}
+        mapper = {'pm25':'pm25', 'pm10':'pm10', 'no2':'no2', 'so2':'so2', 'co':'co'}
         df = df.rename(columns={c: mapper[c] for c in df.columns if c in mapper})
         for c in ['pm25','pm10','no2','so2','co']: 
             if c not in df.columns: df[c] = 0
-        if 'lat' not in df.columns: df['lat'] = 0.0
-        if 'lon' not in df.columns: df['lon'] = 0.0
 
         val = {k: round(df[k].mean(), 1) for k in ['pm25','pm10','no2','so2','co']}
         aqi = int((val['pm25']*2) + (val['pm10']*0.5))
         
-        # Charts & GPS
-        chart_df = df.head(50)
-        chart_data = {
-            "pm25": chart_df['pm25'].tolist(), "pm10": chart_df['pm10'].tolist(),
-            "no2": chart_df['no2'].tolist(), "so2": chart_df['so2'].tolist(),
-            "gps": [{"lat": r['lat'], "lon": r['lon']} for _, r in chart_df.iterrows()]
-        }
-        
-        # Risks
-        risks = calculate_risks(val)
-        
-        current_data = { "aqi": aqi, **val, "status": "Hazardous" if aqi>300 else "Good", "health_risks": risks, "chart_data": chart_data, "esp32_log": current_data["esp32_log"] }
+        current_data.update({
+            "aqi": aqi, **val,
+            "status": "Updated",
+            "health_risks": calculate_advanced_health(val),
+            "chart_data": {k: df[k].head(50).tolist() for k in val.keys()},
+            "last_updated": datetime.now().strftime("%H:%M:%S")
+        })
         return jsonify({"message": "Success", "data": current_data})
     except Exception as e: return jsonify({"error": str(e)}), 500
 
-# --- 2. ESP32 HANDLER ---
 @app.route('/api/upload_sensor', methods=['POST'])
-def receive_esp32():
+def receive_sensor():
     global current_data
     try:
         data = request.json
-        # Merge new data
         current_data.update(data)
-        
-        # Recalculate AQI & Risks
-        current_data['aqi'] = int((current_data.get('pm25',0)*2) + (current_data.get('pm10',0)*0.5))
-        current_data['health_risks'] = calculate_risks(current_data)
+        current_data['aqi'] = int((data.get('pm25',0)*2) + (data.get('pm10',0)*0.5))
+        current_data['health_risks'] = calculate_advanced_health(current_data)
+        current_data['last_updated'] = datetime.now().strftime("%H:%M:%S")
         
         # Log
-        log = f"> [REC] Data Received. AQI: {current_data['aqi']}"
+        log = f"> [REC] Data: AQI {current_data['aqi']} | PM2.5: {data.get('pm25')}"
         current_data['esp32_log'].append(log)
         if len(current_data['esp32_log']) > 20: current_data['esp32_log'].pop(0)
-        
-        # Update Chart Arrays
-        for k in ['pm25','pm10','no2','so2']:
-            current_data['chart_data'][k].append(data.get(k, 0))
-            if len(current_data['chart_data'][k]) > 50: current_data['chart_data'][k].pop(0)
-        current_data['chart_data']['gps'].append({"lat": data.get('lat',0), "lon": data.get('lon',0)})
         
         return jsonify({"status": "success"})
     except Exception as e: return jsonify({"error": str(e)}), 400
 
-# --- 3. REPORT EXPORT HANDLER ---
 @app.route('/export')
 def export_report():
-    lines = [
-        "===============================================",
-        "           SKYSENSE MISSION REPORT             ",
-        f"           Date: {datetime.now().strftime('%Y-%m-%d %H:%M')}",
-        "===============================================",
-        "",
-        "1. MISSION DATA SUMMARY",
-        f"   AQI Level:   {current_data['aqi']}",
-        f"   PM 2.5 Avg:  {current_data['pm25']} µg/m³",
-        f"   PM 10 Avg:   {current_data['pm10']} µg/m³",
-        f"   NO2 Avg:     {current_data['no2']} ppb",
-        f"   SO2 Avg:     {current_data['so2']} ppb",
-        f"   CO Avg:      {current_data['co']} ppm",
-        "",
-        "2. DETAILED HEALTH RISK ANALYSIS",
-    ]
-    
-    if not current_data['health_risks']:
-        lines.append("   [SAFE] No significant health risks detected.")
-        lines.append("   Precautions: Maintain routine monitoring.")
-    else:
-        for r in current_data['health_risks']:
-            lines.append(f"   [!] {r['name']} (Severity: {r['level']})")
-            lines.append("       PRECAUTIONS:")
-            for p in r['precautions']:
-                lines.append(f"       - {p}")
-            lines.append("")
-            
-    lines.append("===============================================")
-    lines.append("Generated by SkySense Autonomous System")
-
-    mem = io.BytesIO("\n".join(lines).encode())
-    return send_file(mem, as_attachment=True, download_name="SkySense_Full_Report.txt", mimetype="text/plain")
+    # Generate CSV Report
+    output = io.StringIO()
+    output.write(f"Report Date,{datetime.now()}\n")
+    output.write(f"AQI Score,{current_data['aqi']}\n")
+    output.write("Pollutant,Concentration,Unit\n")
+    for k in ['pm25','pm10','no2','so2','co']:
+        output.write(f"{k.upper()},{current_data[k]},ug/m3\n")
+    output.write("\nHealth Risks\n")
+    for r in current_data['health_risks']:
+        output.write(f"{r['name']},{r['prob']}%,{r['level']}\n")
+        
+    mem = io.BytesIO()
+    mem.write(output.getvalue().encode('utf-8'))
+    mem.seek(0)
+    return send_file(mem, as_attachment=True, download_name="SkySense_Report.csv", mimetype="text/csv")
 
 if __name__ == '__main__':
     app.run(debug=True)
