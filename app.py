@@ -12,7 +12,6 @@ current_data = {
     "aqi": 0, "pm25": 0, "pm10": 0, "no2": 0, "so2": 0, "co": 0,
     "status": "Waiting...",
     "health_risks": [],
-    # Added GPS array back for your specific request
     "chart_data": {"pm25":[], "pm10":[], "no2":[], "so2":[], "co":[], "gps":[]},
     "esp32_log": ["> System Ready...", "> Waiting for connection..."],
     "last_updated": "Never"
@@ -50,7 +49,7 @@ def calculate_advanced_health(val):
     })
     return risks
 
-# --- THE "ATOMS" UI TEMPLATE ---
+# --- UI TEMPLATE ---
 HTML_TEMPLATE = """
 <!DOCTYPE html>
 <html lang="en">
@@ -67,12 +66,10 @@ HTML_TEMPLATE = """
         body { font-family: 'Inter', sans-serif; background: var(--bg); color: var(--text); padding: 20px; }
         .container { max-width: 1200px; margin: 0 auto; }
         
-        /* HEADER */
+        /* HEADER & ALERTS */
         .header { display: flex; justify-content: space-between; align-items: center; margin-bottom: 20px; }
         .logo { font-size: 1.5rem; font-weight: 700; color: var(--primary); display: flex; align-items: center; gap: 8px; }
-        .refresh-btn { background: #111827; color: white; border: none; padding: 8px 16px; border-radius: 6px; cursor: pointer; font-size: 0.9rem; }
-
-        /* ALERT BANNER */
+        .refresh-btn { background: #111827; color: white; border: none; padding: 8px 16px; border-radius: 6px; cursor: pointer; }
         .alert-banner { background: #fffbeb; border: 1px solid #fcd34d; color: #92400e; padding: 20px; border-radius: 12px; margin-bottom: 25px; }
         .alert-title { font-weight: 700; display: flex; align-items: center; gap: 8px; margin-bottom: 8px; }
         .alert-badge { background: #fcd34d; color: #78350f; font-size: 0.75rem; padding: 2px 8px; border-radius: 12px; }
@@ -84,33 +81,29 @@ HTML_TEMPLATE = """
         .tab-btn { flex: 1; border: none; background: transparent; padding: 12px; font-weight: 600; color: var(--text-light); cursor: pointer; border-radius: 8px; transition: 0.2s; text-align: center; }
         .tab-btn:hover { background: #f9fafb; }
         .tab-btn.active { background: #fff; color: var(--primary); box-shadow: 0 2px 4px rgba(0,0,0,0.05); border: 1px solid var(--border); }
-        .tab-btn i { margin-right: 6px; }
 
-        /* CONTENT */
+        /* SECTIONS */
         .section { display: none; }
         .section.active { display: block; }
 
-        /* GRID */
+        /* GRID & CARDS */
         .grid-2 { display: grid; grid-template-columns: 1fr 1fr; gap: 20px; }
         @media(max-width: 768px) { .grid-2 { grid-template-columns: 1fr; } }
         .card { background: var(--card); border-radius: 16px; padding: 25px; border: 1px solid var(--border); box-shadow: 0 1px 2px rgba(0,0,0,0.05); height: 100%; }
         .card h3 { font-size: 1.1rem; margin-bottom: 20px; font-weight: 700; }
 
-        /* OVERVIEW */
+        /* OVERVIEW COMPONENTS */
         .aqi-display { text-align: center; margin-bottom: 30px; }
         .aqi-num { font-size: 5rem; font-weight: 800; color: #ea580c; line-height: 1; }
-        .aqi-label { color: var(--text-light); margin-top: 5px; }
         .pollutant-row { margin-bottom: 15px; }
         .p-header { display: flex; justify-content: space-between; font-size: 0.9rem; font-weight: 600; margin-bottom: 5px; }
         .p-bar-bg { background: #f3f4f6; height: 8px; border-radius: 10px; overflow: hidden; }
         .p-bar-fill { height: 100%; background: #111827; width: 0%; transition: width 1s; }
-
-        /* STATS */
         .stat-box { background: #eff6ff; padding: 15px; border-radius: 10px; text-align: center; flex: 1; }
         .stat-val { font-size: 1.5rem; font-weight: 700; color: var(--primary); }
         .risk-row { display: flex; justify-content: space-between; padding: 12px 0; border-bottom: 1px solid var(--border); font-size: 0.95rem; }
 
-        /* DISEASE */
+        /* DISEASE COMPONENTS */
         .disease-card { margin-bottom: 20px; border-left: 5px solid #3b82f6; }
         .prob-bar { height: 6px; background: #e5e7eb; border-radius: 4px; margin: 10px 0; }
         .prob-fill { height: 100%; background: #3b82f6; border-radius: 4px; }
@@ -121,7 +114,6 @@ HTML_TEMPLATE = """
         .upload-zone { border: 2px dashed #d1d5db; padding: 50px; text-align: center; border-radius: 12px; cursor: pointer; background: #f9fafb; transition: 0.2s; }
         .upload-zone:hover { border-color: var(--primary); background: #eff6ff; }
         .btn-black { background: #111827; color: white; border: none; padding: 12px 20px; border-radius: 8px; width: 100%; font-weight: 600; cursor: pointer; text-decoration: none; display: inline-block; text-align: center; }
-        .report-summary-row { display: flex; justify-content: space-between; padding: 15px 0; border-bottom: 1px solid #f3f4f6; }
         .footer { text-align: center; margin-top: 40px; font-size: 0.8rem; color: #9ca3af; }
     </style>
 </head>
@@ -130,12 +122,12 @@ HTML_TEMPLATE = """
 <div class="container">
     <div class="header">
         <div class="logo"><i class="fa-solid fa-drone"></i> SkySense</div>
-        <button class="refresh-btn" onclick="location.reload()"><i class="fa-solid fa-rotate"></i> Refresh Data</button>
+        <button class="refresh-btn" onclick="location.reload()"><i class="fa-solid fa-rotate"></i> Refresh</button>
     </div>
 
     <div class="alert-banner">
         <div class="alert-title"><i class="fa-solid fa-circle-info"></i> Health Alert <span class="alert-badge" id="aqi-badge">AQI --</span></div>
-        <div id="alert-msg">Waiting for data analysis...</div>
+        <div id="alert-msg">Waiting for data...</div>
         <ul class="rec-list" id="main-recs"></ul>
     </div>
 
@@ -143,7 +135,7 @@ HTML_TEMPLATE = """
         <button class="tab-btn active" onclick="switchTab('overview')"><i class="fa-solid fa-chart-pie"></i> Overview</button>
         <button class="tab-btn" onclick="switchTab('charts')"><i class="fa-solid fa-map-location-dot"></i> GPS Charts</button>
         <button class="tab-btn" onclick="switchTab('disease')"><i class="fa-solid fa-notes-medical"></i> Disease Reports</button>
-        <button class="tab-btn" onclick="switchTab('esp32')"><i class="fa-solid fa-wifi"></i> ESP32</button>
+        <button class="tab-btn" onclick="switchTab('esp32')"><i class="fa-solid fa-wifi"></i> ESP32 Link</button>
         <button class="tab-btn" onclick="switchTab('upload')"><i class="fa-solid fa-upload"></i> Upload</button>
         <button class="tab-btn" onclick="switchTab('export')"><i class="fa-solid fa-file-export"></i> Export</button>
     </div>
@@ -152,10 +144,7 @@ HTML_TEMPLATE = """
         <div class="grid-2">
             <div class="card">
                 <h3>Air Quality Index</h3>
-                <div class="aqi-display">
-                    <div class="aqi-num" id="aqi-val">--</div>
-                    <div class="aqi-label">Sensitive individuals may experience effects</div>
-                </div>
+                <div class="aqi-display"><div class="aqi-num" id="aqi-val">--</div><div style="color:#6b7280;">Sensitive groups impacted</div></div>
                 <h3>Pollutant Levels</h3>
                 <div id="pollutant-bars"></div>
                 <div style="font-size:0.8rem; color:#9ca3af; margin-top:20px;">Last updated: <span id="last-update">--</span></div>
@@ -163,14 +152,8 @@ HTML_TEMPLATE = """
             <div class="card">
                 <h3>Quick Health Summary</h3>
                 <div style="display:flex; gap:15px; margin-bottom:25px;">
-                    <div class="stat-box">
-                        <div class="stat-val" id="aqi-score-box">--</div>
-                        <div style="font-size:0.8rem; color:#6b7280;">AQI Score</div>
-                    </div>
-                    <div class="stat-box" style="background:#fff7ed;">
-                        <div class="stat-val" style="color:#ea580c;" id="risk-count">--</div>
-                        <div style="font-size:0.8rem; color:#6b7280;">Risk Factors</div>
-                    </div>
+                    <div class="stat-box"><div class="stat-val" id="aqi-score-box">--</div><div style="font-size:0.8rem;">AQI Score</div></div>
+                    <div class="stat-box" style="background:#fff7ed;"><div class="stat-val" style="color:#ea580c;" id="risk-count">--</div><div style="font-size:0.8rem;">Risk Factors</div></div>
                 </div>
                 <h3>Top Health Concerns:</h3>
                 <div id="quick-risks"></div>
@@ -180,14 +163,14 @@ HTML_TEMPLATE = """
 
     <div id="charts" class="section">
         <div class="card">
-            <h3>Pollutant Trends vs Flight Path</h3>
-            <p style="color:#6b7280; font-size:0.9rem; margin-bottom:15px;">Hover over points to see GPS Coordinates</p>
+            <h3>Pollutant Levels vs GPS Coordinates</h3>
+            <p style="color:#6b7280; font-size:0.9rem; margin-bottom:15px;">Bars change color based on danger level (Green=Safe, Yellow=Mod, Red=Danger)</p>
             <div style="height:400px;"><canvas id="mainChart"></canvas></div>
         </div>
     </div>
 
     <div id="disease" class="section">
-        <div class="card" style="background:transparent; border:none; box-shadow:none; padding:0;">
+        <div class="card" style="border:none; box-shadow:none; padding:0;">
             <h3>Disease Risk Assessment</h3>
             <div id="disease-container"></div>
         </div>
@@ -196,15 +179,15 @@ HTML_TEMPLATE = """
     <div id="esp32" class="section">
         <div class="card">
             <div style="display:flex; justify-content:space-between; align-items:center;">
-                <h3><i class="fa-solid fa-microchip"></i> ESP32 Connection</h3>
-                <span style="background:#dcfce7; color:#166534; padding:4px 10px; border-radius:20px; font-size:0.85rem;">● Active Listener</span>
+                <h3><i class="fa-solid fa-microchip"></i> ESP32 Drone Link</h3>
+                <span style="background:#dcfce7; color:#166534; padding:4px 10px; border-radius:20px; font-size:0.85rem;">● Ready to Connect</span>
             </div>
             <div style="background:#f3f4f6; padding:20px; border-radius:12px; margin-top:20px;">
                 <strong>⚡ ESP32 Setup:</strong>
                 <ol style="margin:10px 0 0 20px; font-size:0.9rem; color:#4b5563; line-height:1.6;">
-                    <li>Connect ESP32 to WiFi.</li>
-                    <li>POST JSON to <code>/api/upload_sensor</code>.</li>
-                    <li>Format: <code>{"pm25":25.5, "lat":17.385, "lon":78.486 ...}</code></li>
+                    <li>Flash code to ESP32.</li>
+                    <li>Endpoint: <code>/api/upload_sensor</code></li>
+                    <li>JSON Format: <code>{"pm25":30, "lat":17.38, "lon":78.48}</code></li>
                 </ol>
             </div>
             <div class="console" id="esp-console"></div>
@@ -213,7 +196,7 @@ HTML_TEMPLATE = """
 
     <div id="upload" class="section">
         <div class="card">
-            <h3><i class="fa-solid fa-file-csv"></i> File Upload & SD Card Data</h3>
+            <h3><i class="fa-solid fa-file-csv"></i> File Upload</h3>
             <label class="upload-zone">
                 <i class="fa-solid fa-cloud-arrow-up" style="font-size: 2.5rem; color: #9ca3af; margin-bottom:15px;"></i>
                 <div id="upload-text" style="font-weight:600;">Click to Browse Files</div>
@@ -226,15 +209,14 @@ HTML_TEMPLATE = """
         <div class="card">
             <h3><i class="fa-solid fa-file-arrow-down"></i> Export Report</h3>
             <div style="background:#f9fafb; padding:20px; border-radius:12px; border:1px solid #e5e7eb; margin-bottom:20px;">
-                <div class="report-summary-row"><span>Report Date</span><strong><script>document.write(new Date().toLocaleDateString())</script></strong></div>
-                <div class="report-summary-row"><span>AQI Score</span><strong id="rep-aqi">--</strong></div>
-                <div class="report-summary-row"><span>Pollutant Levels</span><strong id="rep-pol">--</strong></div>
+                <div style="display:flex; justify-content:space-between; margin-bottom:10px;"><span>Report Date</span><strong><script>document.write(new Date().toLocaleDateString())</script></strong></div>
+                <div style="display:flex; justify-content:space-between;"><span>AQI Score</span><strong id="rep-aqi">--</strong></div>
             </div>
             <a href="/export" class="btn-black"><i class="fa-solid fa-download"></i> Download Full Report</a>
         </div>
     </div>
 
-    <div class="footer">Made by SkySense Team | v1.0.5</div>
+    <div class="footer">Made by SkySense Team | v2.0 Final</div>
 </div>
 
 <script>
@@ -261,6 +243,7 @@ HTML_TEMPLATE = """
     });
 
     let mainChart = null;
+
     function updateUI(data) {
         // OVERVIEW
         document.getElementById('aqi-val').innerText = data.aqi;
@@ -283,33 +266,31 @@ HTML_TEMPLATE = """
         if(data.health_risks.length > 0) data.health_risks[0].recs.forEach(r => recList.innerHTML += `<li>${r}</li>`);
         else recList.innerHTML = "<li>Safe for outdoor activities.</li>";
 
-        // CHARTS (UPDATED to LINE chart with GPS Tooltips)
+        // CHARTS: COLOR CODED BAR GRAPH
         if(data.chart_data.pm25.length > 0) {
             const ctx = document.getElementById('mainChart').getContext('2d');
+            
+            // COLOR LOGIC: Green < 50 < Yellow < 100 < Red
+            const colors = data.chart_data.pm25.map(val => val > 100 ? '#ef4444' : val > 50 ? '#eab308' : '#22c55e');
+            
+            // X-AXIS LABELS: Lat, Lon
+            const gpsLabels = data.chart_data.gps.map(g => `${g.lat.toFixed(4)}, ${g.lon.toFixed(4)}`);
+
             if(mainChart) mainChart.destroy();
             mainChart = new Chart(ctx, {
-                type: 'line',
+                type: 'bar', // CHANGED TO BAR
                 data: {
-                    labels: data.chart_data.pm25.map((_, i) => `Pt ${i+1}`),
-                    datasets: [
-                        { label: 'PM2.5', data: data.chart_data.pm25, borderColor: '#3b82f6', fill: false, tension: 0.1 },
-                        { label: 'PM10', data: data.chart_data.pm10, borderColor: '#ef4444', fill: false, tension: 0.1 }
-                    ]
+                    labels: gpsLabels, // GPS ON X-AXIS
+                    datasets: [{
+                        label: 'PM2.5 Levels',
+                        data: data.chart_data.pm25,
+                        backgroundColor: colors, // DYNAMIC COLORS
+                        borderWidth: 1
+                    }]
                 },
                 options: { 
                     responsive: true, maintainAspectRatio: false,
-                    plugins: {
-                        tooltip: {
-                            callbacks: {
-                                label: function(context) {
-                                    let idx = context.dataIndex;
-                                    let val = context.raw;
-                                    let gps = data.chart_data.gps[idx] || {lat: '?', lon: '?'};
-                                    return `${context.dataset.label}: ${val} | GPS: ${gps.lat}, ${gps.lon}`;
-                                }
-                            }
-                        }
-                    }
+                    scales: { x: { title: {display:true, text:'GPS Coordinates (Lat, Lon)'} } }
                 }
             });
         }
@@ -326,7 +307,6 @@ HTML_TEMPLATE = """
 
         document.getElementById('esp-console').innerHTML = data.esp32_log.join('<br>');
         document.getElementById('rep-aqi').innerText = data.aqi;
-        document.getElementById('rep-pol').innerText = `PM2.5: ${data.pm25}`;
     }
 </script>
 </body>
@@ -385,16 +365,14 @@ def receive_sensor():
         current_data['health_risks'] = calculate_advanced_health(current_data)
         current_data['last_updated'] = datetime.now().strftime("%H:%M:%S")
         
-        # Append to History
         for k in ['pm25','pm10','no2','so2','co']:
             current_data['chart_data'][k].append(data.get(k, 0))
             if len(current_data['chart_data'][k]) > 50: current_data['chart_data'][k].pop(0)
         
-        # Append GPS
         current_data['chart_data']['gps'].append({"lat": data.get('lat',0), "lon": data.get('lon',0)})
         if len(current_data['chart_data']['gps']) > 50: current_data['chart_data']['gps'].pop(0)
 
-        current_data['esp32_log'].append(f"> [REC] Data AQI: {current_data['aqi']}")
+        current_data['esp32_log'].append(f"> [REC] AQI: {current_data['aqi']} | GPS: {data.get('lat')}")
         if len(current_data['esp32_log']) > 20: current_data['esp32_log'].pop(0)
         
         return jsonify({"status": "success"})
