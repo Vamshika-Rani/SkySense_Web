@@ -5,10 +5,10 @@ import re
 import random
 from datetime import datetime
 
-# Geopy for City Names
+# --- GEOLOCATOR SETUP ---
 try:
     from geopy.geocoders import Nominatim
-    geolocator = Nominatim(user_agent="skysense_app_v_final")
+    geolocator = Nominatim(user_agent="skysense_final_v6")
 except ImportError:
     geolocator = None
 
@@ -26,25 +26,21 @@ current_data = {
     "connection_status": "Listening"
 }
 
-# --- SMART COLUMN FINDER ---
+# --- SMART COLUMN FIXER ---
 def normalize_columns(df):
-    """Finds lat/lon/pm25 columns regardless of exact name."""
     col_map = {}
     for col in df.columns:
         c_lower = col.lower().strip()
-        # Map PM2.5 variations
         if 'pm2.5' in c_lower or 'pm25' in c_lower: col_map[col] = 'pm25'
         elif 'pm10' in c_lower: col_map[col] = 'pm10'
         elif 'no2' in c_lower: col_map[col] = 'no2'
         elif 'so2' in c_lower: col_map[col] = 'so2'
         elif 'co' in c_lower and 'count' not in c_lower: col_map[col] = 'co'
-        # Map GPS variations (Crucial Fix)
         elif 'lat' in c_lower: col_map[col] = 'lat'
         elif 'lon' in c_lower or 'lng' in c_lower: col_map[col] = 'lon'
-    
     return df.rename(columns=col_map)
 
-# --- HELPER: GPS TO CITY ---
+# --- CITY NAME HELPER ---
 def get_city_name(lat, lon):
     if not geolocator or lat == 0: return "Unknown Area"
     try:
@@ -59,7 +55,7 @@ def get_city_name(lat, lon):
 # --- HEALTH ENGINE ---
 def calculate_advanced_health(val):
     risks = []
-    # 1. Asthma
+    # Asthma
     asthma_prob = min(100, int((val['pm25'] / 35) * 20 + (val['pm10'] / 50) * 10))
     risks.append({
         "name": "Asthma & Allergies",
@@ -68,7 +64,7 @@ def calculate_advanced_health(val):
         "symptoms": ["Wheezing", "Coughing", "Runny nose", "Itchy eyes"],
         "recs": ["Keep rescue inhaler handy", "Stay indoors during high pollution", "Use air purifier"]
     })
-    # 2. Cardiovascular
+    # Cardiovascular
     cardio_prob = min(100, int((val['pm25'] / 35) * 15 + (val['co'] / 4) * 20))
     risks.append({
         "name": "Cardiovascular Diseases",
@@ -79,7 +75,7 @@ def calculate_advanced_health(val):
     })
     return risks
 
-# --- UI TEMPLATE ---
+# --- UI TEMPLATE (Fixed Syntax Error) ---
 HTML_TEMPLATE = """
 <!DOCTYPE html>
 <html lang="en">
@@ -95,29 +91,23 @@ HTML_TEMPLATE = """
         * { box-sizing: border-box; margin: 0; padding: 0; }
         body { font-family: 'Inter', sans-serif; background: var(--bg); color: var(--text); padding: 20px; }
         .container { max-width: 1200px; margin: 0 auto; }
-        
         .header { display: flex; justify-content: space-between; align-items: center; margin-bottom: 20px; }
         .logo { font-size: 1.5rem; font-weight: 700; color: #2563eb; display: flex; align-items: center; gap: 8px; }
         .refresh-btn { background: #111827; color: white; border: none; padding: 8px 16px; border-radius: 6px; cursor: pointer; }
-        
         .alert-banner { background: #fffbeb; border: 1px solid #fcd34d; color: #92400e; padding: 20px; border-radius: 12px; margin-bottom: 25px; }
         .alert-badge { background: #fcd34d; color: #78350f; font-size: 0.75rem; padding: 2px 8px; border-radius: 12px; font-weight: 600; }
         .rec-list { list-style: none; margin-top: 10px; font-size: 0.9rem; line-height: 1.6; }
         .rec-list li::before { content: "•"; color: #3b82f6; margin-right: 8px; }
-
         .tabs { display: flex; gap: 5px; background: white; padding: 5px; border-radius: 12px; margin-bottom: 25px; box-shadow: 0 1px 3px rgba(0,0,0,0.05); overflow-x: auto; }
         .tab-btn { flex: 1; min-width: 100px; border: none; background: transparent; padding: 12px; font-weight: 600; color: #6b7280; cursor: pointer; border-radius: 8px; transition: 0.2s; text-align: center; white-space: nowrap; }
         .tab-btn:hover { background: #f9fafb; }
         .tab-btn.active { background: #fff; color: #2563eb; box-shadow: 0 2px 4px rgba(0,0,0,0.05); border: 1px solid var(--border); }
-
         .section { display: none; }
         .section.active { display: block; }
-        
         .grid-2 { display: grid; grid-template-columns: 1fr 1fr; gap: 20px; }
         @media(max-width: 768px) { .grid-2 { grid-template-columns: 1fr; } }
         .card { background: var(--card); border-radius: 16px; padding: 25px; border: 1px solid var(--border); box-shadow: 0 1px 2px rgba(0,0,0,0.05); }
         .card h3 { font-size: 1.1rem; margin-bottom: 20px; font-weight: 700; display:flex; align-items:center; gap:10px; }
-
         .aqi-num { font-size: 5rem; font-weight: 800; color: #ea580c; line-height: 1; text-align: center; margin-bottom: 10px; }
         .pollutant-row { margin-bottom: 15px; }
         .p-header { display: flex; justify-content: space-between; font-size: 0.9rem; font-weight: 600; margin-bottom: 5px; }
@@ -126,8 +116,6 @@ HTML_TEMPLATE = """
         .stat-box { background: #eff6ff; padding: 15px; border-radius: 10px; text-align: center; flex: 1; }
         .stat-val { font-size: 1.5rem; font-weight: 700; color: #2563eb; }
         .risk-row { display: flex; justify-content: space-between; padding: 12px 0; border-bottom: 1px solid var(--border); font-size: 0.95rem; }
-
-        /* ESP32 DARK THEME CARDS */
         .esp-dark-card { background: #111827; color: white; border-radius: 16px; padding: 25px; height: 100%; border: 1px solid #374151; }
         .esp-dark-card h3 { color: white; display: flex; gap: 10px; align-items: center; margin-bottom: 20px; }
         .console-dark { background: #1f2937; color: #4ade80; padding: 20px; border-radius: 8px; font-family: monospace; height: 200px; overflow-y: auto; font-size: 0.9rem; border: 1px solid #374151; }
@@ -135,7 +123,6 @@ HTML_TEMPLATE = """
         .param-label { width: 100px; font-weight: 600; color: #9ca3af; }
         .param-val { color: white; }
         .status-dot { height: 10px; width: 10px; background-color: #4ade80; border-radius: 50%; display: inline-block; margin-right: 5px; }
-
         .upload-zone { border: 2px dashed #d1d5db; padding: 50px; text-align: center; border-radius: 12px; cursor: pointer; background: #f9fafb; transition: 0.2s; }
         .upload-zone:hover { border-color: #3b82f6; background: #eff6ff; }
         .btn-black { background: #111827; color: white; border: none; padding: 12px 20px; border-radius: 8px; width: 100%; font-weight: 600; cursor: pointer; text-decoration: none; display: inline-block; text-align: center; }
@@ -235,7 +222,6 @@ HTML_TEMPLATE = """
                     </code>
                 </div>
             </div>
-
             <div class="esp-dark-card">
                 <h3><i class="fa-solid fa-rocket"></i> Live Telemetry</h3>
                 <div class="console-dark" id="esp-console">
@@ -267,7 +253,7 @@ HTML_TEMPLATE = """
         </div>
     </div>
 
-    <div class="footer">Made by SkySense Team | v5.1</div>
+    <div class="footer">Made by SkySense Team | v6.0 Final</div>
 </div>
 
 <script>
@@ -280,7 +266,7 @@ HTML_TEMPLATE = """
 
     setInterval(() => { fetch('/api/data').then(res => res.json()).then(data => updateUI(data)); }, 3000);
 
-    // MAIN UPLOAD
+    // UPLOAD
     document.getElementById('fileInput').addEventListener('change', async (e) => {
         const file = e.target.files[0];
         if(!file) return;
@@ -340,7 +326,7 @@ HTML_TEMPLATE = """
         if(data.health_risks.length > 0) data.health_risks[0].recs.forEach(r => recList.innerHTML += `<li>${r}</li>`);
         else recList.innerHTML = "<li>Safe for outdoor activities.</li>";
 
-        // CHARTS: GPS BAR GRAPH + CITY TOOLTIP
+        // CHARTS
         if(data.chart_data.pm25.length > 0) {
             const ctx = document.getElementById('mainChart').getContext('2d');
             const colors = data.chart_data.pm25.map(val => val > 100 ? '#ef4444' : val > 50 ? '#eab308' : '#22c55e');
@@ -378,3 +364,107 @@ HTML_TEMPLATE = """
 </script>
 </body>
 </html>
+"""
+
+# --- BACKEND ROUTES ---
+
+@app.route('/')
+def home(): return render_template_string(HTML_TEMPLATE)
+
+@app.route('/api/data')
+def get_data(): return jsonify(current_data)
+
+@app.route('/upload', methods=['POST'])
+def upload_file():
+    global current_data
+    if 'file' not in request.files: return jsonify({"error": "No file"}), 400
+    file = request.files['file']
+    try:
+        if file.filename.endswith('.csv'): df = pd.read_csv(file)
+        elif file.filename.endswith(('.xlsx', '.xls')): df = pd.read_excel(file)
+        else: return jsonify({"error": "Invalid file"}), 400
+
+        df = normalize_columns(df)
+        for c in ['pm25','pm10','no2','so2','co']: 
+            if c not in df.columns: df[c] = 0
+        if 'lat' not in df.columns: df['lat'] = 0.0
+        if 'lon' not in df.columns: df['lon'] = 0.0
+
+        val = {k: round(df[k].mean(), 1) for k in ['pm25','pm10','no2','so2','co']}
+        aqi = int((val['pm25']*2) + (val['pm10']*0.5))
+        
+        valid_gps = df[(df['lat'] != 0) & (df['lon'] != 0)]
+        loc_name = get_city_name(valid_gps.iloc[0]['lat'], valid_gps.iloc[0]['lon']) if not valid_gps.empty else "GPS Not Found"
+
+        c_data = {k: df[k].head(50).tolist() for k in val.keys()}
+        gps_list = []
+        for i, r in df.head(50).iterrows():
+            gps_list.append({
+                "lat": r['lat'], 
+                "lon": r['lon'],
+                "city": get_city_name(r['lat'], r['lon']) if i % 5 == 0 else loc_name 
+            })
+        c_data['gps'] = gps_list
+
+        current_data.update({
+            "aqi": aqi, **val, "status": "Updated",
+            "location_name": loc_name,
+            "health_risks": calculate_advanced_health(val),
+            "chart_data": c_data,
+            "last_updated": datetime.now().strftime("%H:%M:%S"),
+            "connection_status": "Connected"
+        })
+        return jsonify({"message": "Success", "data": current_data})
+    except Exception as e: return jsonify({"error": str(e)}), 500
+
+@app.route('/upload_history', methods=['POST'])
+def upload_history():
+    if 'file' not in request.files: return jsonify({"error": "No file"}), 400
+    file = request.files['file']
+    try:
+        df = pd.read_csv(file)
+        date_col = next((c for c in df.columns if 'date' in c.lower()), None)
+        val_col = next((c for c in df.columns if 'aqi' in c.lower() or 'pm25' in c.lower()), None)
+        if not date_col: return jsonify({"error": "No Date column found"}), 400
+        df = df.sort_values(by=date_col)
+        return jsonify({"labels": df[date_col].astype(str).tolist(), "values": df[val_col].tolist()})
+    except Exception as e: return jsonify({"error": str(e)}), 500
+
+@app.route('/api/upload_sensor', methods=['POST'])
+def receive_sensor():
+    global current_data
+    try:
+        data = request.json
+        current_data.update(data)
+        current_data['aqi'] = int((data.get('pm25',0)*2) + (data.get('pm10',0)*0.5))
+        current_data['health_risks'] = calculate_advanced_health(current_data)
+        current_data['last_updated'] = datetime.now().strftime("%H:%M:%S")
+        current_data['location_name'] = get_city_name(data.get('lat',0), data.get('lon',0))
+
+        for k in ['pm25','pm10','no2','so2','co']:
+            current_data['chart_data'][k].append(data.get(k, 0))
+            if len(current_data['chart_data'][k]) > 50: current_data['chart_data'][k].pop(0)
+        
+        current_data['chart_data']['gps'].append({
+            "lat": data.get('lat',0), "lon": data.get('lon',0),
+            "city": current_data['location_name']
+        })
+        if len(current_data['chart_data']['gps']) > 50: current_data['chart_data']['gps'].pop(0)
+
+        current_data['esp32_log'].append(f"> [REC] AQI: {current_data['aqi']} | Loc: {current_data['location_name']}")
+        if len(current_data['esp32_log']) > 20: current_data['esp32_log'].pop(0)
+        
+        return jsonify({"status": "success"})
+    except Exception as e: return jsonify({"error": str(e)}), 400
+
+@app.route('/export')
+def export_report():
+    output = io.StringIO()
+    output.write(f"Report Date,{datetime.now()}\nLocation,{current_data['location_name']}\nAQI,{current_data['aqi']}\n")
+    mem = io.BytesIO()
+    mem.write(output.getvalue().encode('utf-8'))
+    mem.seek(0)
+    return send_file(mem, as_attachment=True, download_name="SkySense_Report.csv", mimetype="text/csv")
+
+if __name__ == '__main__':
+    app.run(debug=True)
