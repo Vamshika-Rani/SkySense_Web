@@ -6,7 +6,7 @@ import datetime
 # Safe Import for Geopy
 try:
     from geopy.geocoders import Nominatim
-    geolocator = Nominatim(user_agent="skysense_final_v111")
+    geolocator = Nominatim(user_agent="skysense_final_v112")
 except ImportError:
     geolocator = None
 
@@ -23,29 +23,30 @@ current_data = {
     "last_updated": "Never"
 }
 
-# --- ROBUST FILE READER (Fail-Safe Version) ---
+# --- ROBUST FILE READER ---
 def read_file_safely(file):
-    # Method 1: Try Standard CSV (UTF-8)
+    # Reset pointer to start
+    file.seek(0)
+    
+    # 1. Try Reading as CSV
     try:
-        file.seek(0)
         return pd.read_csv(file)
     except:
         pass
     
-    # Method 2: Try Excel (xlsx/xls)
+    # 2. Try Reading as Excel
     try:
         file.seek(0)
         return pd.read_excel(file)
     except:
         pass
 
-    # Method 3: Robust CSV (Latin1 Encoding + Auto-Separator)
-    # This catches "messy" CSV files saved by Excel
+    # 3. Fallback for messy CSVs
     try:
         file.seek(0)
         return pd.read_csv(file, encoding='latin1', sep=None, engine='python')
     except:
-        raise ValueError("Could not read file. Please ensure it is a valid CSV or Excel file.")
+        raise ValueError("File format not recognized. Please upload a valid CSV or Excel file.")
 
 def normalize_columns(df):
     col_map = {}
@@ -56,7 +57,7 @@ def normalize_columns(df):
         elif 'pm10' in c: col_map[col] = 'pm10'
         elif 'temp' in c: col_map[col] = 'temp'
         elif 'hum' in c: col_map[col] = 'hum'
-        elif 'lat' in c or 'lal' in c: col_map[col] = 'lat'
+        elif 'lat' in c or 'lal' in c: col_map[col] = 'lat' # Fixes 'lalitude'
         elif 'lon' in c or 'lng' in c: col_map[col] = 'lon'
     return df.rename(columns=col_map)
 
@@ -80,12 +81,7 @@ def calc_health(val):
         "desc": "Micro-particles entering bloodstream causing inflammation.",
         "prob": pm25_score,
         "level": "High" if pm25_score > 50 else "Moderate",
-        "recs": [
-            "Wear an N95/N99 mask outdoors",
-            "Run HEPA air purifiers in all bedrooms",
-            "Avoid all outdoor cardio exercises",
-            "Keep windows sealed during traffic hours"
-        ]
+        "recs": ["Wear an N95/N99 mask outdoors", "Run HEPA air purifiers", "Avoid outdoor cardio", "Keep windows sealed"]
     })
 
     # 2. Upper Airway Stress
@@ -95,48 +91,32 @@ def calc_health(val):
         "desc": "Irritation of throat and nasal passages due to dust/dryness.",
         "prob": airway_score,
         "level": "High" if airway_score > 60 else "Moderate",
-        "recs": [
-            "Use a humidifier to maintain 40-50% humidity",
-            "Perform saline nasal rinses twice daily",
-            "Drink warm fluids to hydrate mucous membranes",
-            "Wear protective eyewear in dusty zones"
-        ]
+        "recs": ["Use a humidifier", "Saline nasal rinses", "Drink warm fluids", "Wear protective eyewear"]
     })
 
-    # 3. Heat Stress Risk
+    # 3. Heat Stress
     heat_score = 0
     if val['temp'] > 30: heat_score = min(100, int((val['temp'] - 30) * 10))
     risks.append({
         "name": "Heat Stress Risk",
-        "desc": "Potential for dehydration, fatigue, and heat exhaustion.",
+        "desc": "Potential for dehydration and heat exhaustion.",
         "prob": heat_score,
         "level": "High" if heat_score > 40 else "Low",
-        "recs": [
-            "Drink electrolyte-rich fluids every hour",
-            "Wear light, loose-fitting cotton clothing",
-            "Avoid direct sun between 12 PM and 4 PM",
-            "Take cool showers to lower body temperature"
-        ]
+        "recs": ["Drink electrolytes", "Wear light clothing", "Avoid sun 12PM-4PM", "Cool showers"]
     })
 
-    # 4. Asthma Trigger Warning
+    # 4. Asthma Trigger
     asthma_score = min(100, int((val['pm25'] * 0.9) + (val['pm10'] * 0.4)))
     risks.append({
-        "name": "Asthma Trigger Warning",
-        "desc": "High particulate matter may trigger wheezing/shortness of breath.",
+        "name": "Asthma Trigger",
+        "desc": "High particulate matter may trigger wheezing.",
         "prob": asthma_score,
         "level": "High" if asthma_score > 50 else "Moderate",
-        "recs": [
-            "Keep rescue inhaler immediately accessible",
-            "Stay indoors with windows closed",
-            "Avoid burning candles/incense indoors",
-            "Monitor lung function with a peak flow meter"
-        ]
+        "recs": ["Keep inhaler ready", "Stay indoors", "No candles/incense", "Monitor peak flow"]
     })
-
     return risks
 
-# --- HTML TEMPLATE ---
+# --- HTML TEMPLATE (Split to avoid Syntax Errors) ---
 HTML_HEAD = """
 <!DOCTYPE html>
 <html lang="en">
@@ -157,27 +137,21 @@ HTML_HEAD = """
         .logo { font-size: 1.8rem; font-weight: 800; color: var(--text-main); letter-spacing: -0.5px; display:flex; align-items:center; gap:10px; }
         .refresh-btn { background: #e5e5e5; color: var(--text-main); border: none; padding: 10px 20px; border-radius: 30px; font-weight: 600; cursor: pointer; transition: 0.2s; }
         .alert-banner { background: #fff7ed; border: 1px solid #ffedd5; color: #9a3412; padding: 20px; border-radius: 12px; margin-bottom: 30px; display:flex; align-items:center; gap:15px; }
-        
         .nav-tabs { display: flex; gap: 10px; background: white; padding: 8px; border-radius: 50px; margin-bottom: 30px; border: 1px solid var(--border); width: fit-content; box-shadow: 0 2px 5px rgba(0,0,0,0.05); }
         .tab-btn { border: none; background: transparent; padding: 10px 24px; font-weight: 600; color: var(--text-muted); cursor: pointer; border-radius: 30px; transition: 0.2s; font-size: 0.9rem; }
         .tab-btn.active { background: var(--primary); color: white; }
-        
         .section { display: none; animation: fadeIn 0.3s ease; }
         .section.active { display: block; }
         @keyframes fadeIn { from { opacity: 0; transform: translateY(5px); } to { opacity: 1; transform: translateY(0); } }
-        
         .dashboard-grid { display: grid; grid-template-columns: 1.2fr 1fr; gap: 25px; }
         .card { background: var(--card-bg); border-radius: 20px; padding: 30px; box-shadow: 0 4px 6px -1px rgba(0,0,0,0.02); border: 1px solid var(--border); height: 100%; }
         .card-header { display: flex; justify-content: space-between; align-items: center; margin-bottom: 25px; }
         .card-title { font-size: 1.1rem; font-weight: 700; color: var(--text-main); }
-        
         .aqi-num { font-size: 5rem; font-weight: 800; color: var(--danger); line-height: 1; text-align: center; }
         .aqi-sub { text-align: center; color: var(--text-muted); margin-top: 10px; font-weight: 500; }
         .stat-row { display: flex; gap: 15px; margin-top: 30px; }
         .stat-box { flex: 1; background: #fafaf9; padding: 15px; border-radius: 12px; text-align: center; }
         .stat-val { font-size: 1.5rem; font-weight: 800; color: var(--text-main); }
-        
-        /* HEALTH GRID */
         .health-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 20px; }
         @media(max-width: 800px) { .health-grid { grid-template-columns: 1fr; } }
         .risk-card { background: white; border: 1px solid var(--border); border-radius: 16px; padding: 25px; border-left: 5px solid var(--danger); }
@@ -192,10 +166,15 @@ HTML_HEAD = """
         .rec-list { list-style: none; font-size: 0.9rem; color: var(--text-main); padding-left: 0; }
         .rec-list li { margin-bottom: 5px; position: relative; padding-left: 15px; }
         .rec-list li::before { content: "•"; color: var(--primary); font-weight: bold; position: absolute; left: 0; }
-
-        .upload-area { border: 2px dashed #d6d3d1; padding: 50px; text-align: center; border-radius: 16px; cursor: pointer; background: #fafaf9; }
-        #map-container { height: 450px; width: 100%; border-radius: 16px; z-index: 1; }
         
+        /* UPDATED CLEAN UPLOAD CARD */
+        .upload-card { display:block; text-align:center; padding: 40px; border: 2px dashed #d6d3d1; border-radius: 20px; background: #fafaf9; cursor: pointer; transition: 0.2s; }
+        .upload-card:hover { border-color: var(--primary); background: #f0fdf4; }
+        .upload-icon { font-size: 3rem; color: #d6d3d1; margin-bottom: 15px; transition:0.2s; }
+        .upload-card:hover .upload-icon { color: var(--primary); }
+        .date-picker { width:100%; padding:15px; border:1px solid #e7e5e4; border-radius:12px; font-size:1rem; margin-bottom:20px; font-family:'Inter',sans-serif; }
+        
+        #map-container { height: 450px; width: 100%; border-radius: 16px; z-index: 1; }
         .btn-primary { display:inline-block; background:#0f172a; color:white; padding:12px 25px; border-radius:8px; text-decoration:none; margin-right:10px; border:none; cursor:pointer; font-weight:600; font-size:0.9rem; }
         .btn-outline { display:inline-block; background:transparent; color:#0f172a; padding:12px 25px; border-radius:8px; text-decoration:none; border:2px solid #0f172a; font-weight:600; font-size:0.9rem; cursor:pointer; }
     </style>
@@ -276,10 +255,14 @@ HTML_BODY = """
 
     <div id="upload" class="section">
         <div class="card">
-            <div class="card-title" style="margin-bottom:20px;">Upload Data File</div>
-            <input type="date" id="upload-date" style="padding:10px; border:1px solid #e7e5e4; border-radius:8px; margin-bottom:20px;">
-            <label class="upload-area">
-                <div id="upload-text" style="font-weight:600;">Drag & Drop or Click to Browse</div>
+            <div class="card-title" style="margin-bottom:20px;">Upload Flight Data</div>
+            <p style="color:#78716c; margin-bottom:10px;">Select the date of the flight:</p>
+            <input type="date" id="upload-date" class="date-picker">
+            
+            <label class="upload-card">
+                <i class="fa-solid fa-cloud-arrow-up upload-icon"></i>
+                <div id="upload-text" style="font-weight:600; font-size:1.1rem; color:#1c1917;">Click to Upload File</div>
+                <div style="color:#78716c; font-size:0.9rem; margin-top:5px;">Supports CSV & Excel</div>
                 <input type="file" id="fileInput" style="display:none;">
             </label>
         </div>
@@ -328,7 +311,7 @@ HTML_BODY = """
             const d = await res.json();
             if(d.error) { alert("Server Error: " + d.error); txt.innerText = "Upload Failed"; } 
             else { txt.innerText = "Success!"; updateUI(d.data); setTimeout(()=>sw('overview'), 500); }
-        } catch(e) { alert("Upload Failed."); txt.innerText = "Retry"; }
+        } catch(e) { alert("Upload Failed. Ensure file is CSV/Excel."); txt.innerText = "Retry"; }
     });
 
     function initMap() {
@@ -395,7 +378,7 @@ HTML_BODY = """
 </html>
 """
 
-# --- ROUTES ---
+# --- BACKEND ROUTES ---
 
 @app.route('/')
 def home(): return render_template_string(HTML_HEAD + HTML_BODY)
@@ -431,12 +414,11 @@ def upload_file():
             
         history_log.insert(0, {"date":dt, "filename":f.filename, "aqi":aqi})
         
-        # Update current data with AVERAGES
         current_data.update({
             "aqi": aqi, "location_name": loc, 
             "avg_pm1": avgs['pm1'], "avg_pm25": avgs['pm25'], "avg_pm10": avgs['pm10'],
             "avg_temp": avgs['temp'], "avg_hum": avgs['hum'],
-            "pm1": avgs['pm1'], "pm25": avgs['pm25'], "pm10": avgs['pm10'], # Live display uses avg for upload
+            "pm1": avgs['pm1'], "pm25": avgs['pm25'], "pm10": avgs['pm10'], 
             "health_risks": calc_health(avgs), 
             "chart_data": {"aqi":aqis,"gps":gps}, 
             "last_updated": datetime.datetime.now().strftime("%H:%M")
@@ -464,7 +446,6 @@ def sensor():
 
 @app.route('/export/text')
 def export_text():
-    # Generate Detailed Text Report
     d = current_data
     report = f"""
 ==================================================
