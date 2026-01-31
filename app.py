@@ -5,18 +5,39 @@ import re
 import random
 from datetime import datetime
 
+# Try to import geopy for City Names (Fallback if missing)
+try:
+    from geopy.geocoders import Nominatim
+    geolocator = Nominatim(user_agent="skysense_app_v2")
+except ImportError:
+    geolocator = None
+
 app = Flask(__name__)
 
 # --- GLOBAL DATA STORE ---
 current_data = {
     "aqi": 0, "pm25": 0, "pm10": 0, "no2": 0, "so2": 0, "co": 0,
     "status": "Waiting...",
+    "location_name": "Unknown Location",
     "health_risks": [],
-    "chart_data": {"pm25":[], "pm10":[], "no2":[], "so2":[], "co":[], "gps":[]},
+    "chart_data": {"pm25":[], "pm10":[], "gps":[]},
     "esp32_log": [],
     "last_updated": "Never",
     "connection_status": "Disconnected"
 }
+
+# --- HELPER: GPS TO CITY NAME ---
+def get_city_name(lat, lon):
+    if not geolocator: return "Location Svc Unavailable"
+    try:
+        # Simple caching could go here, but for now we call direct
+        location = geolocator.reverse(f"{lat}, {lon}", exactly_one=True, language='en')
+        if location:
+            address = location.raw.get('address', {})
+            return address.get('suburb') or address.get('city') or address.get('town') or "Unknown Area"
+    except:
+        return "Unknown Area"
+    return "Unknown Area"
 
 # --- HEALTH ENGINE ---
 def calculate_advanced_health(val):
@@ -52,6 +73,7 @@ HTML_TEMPLATE = """
     <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap" rel="stylesheet">
     <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.4.0/css/all.min.css">
     <script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
+    <script src="https://cdn.jsdelivr.net/npm/chartjs-adapter-date-fns"></script>
     <style>
         :root { --primary: #3b82f6; --bg: #f8fafc; --card: #ffffff; --text: #1f2937; --border: #e5e7eb; }
         * { box-sizing: border-box; margin: 0; padding: 0; }
@@ -67,8 +89,8 @@ HTML_TEMPLATE = """
         .rec-list { list-style: none; margin-top: 10px; font-size: 0.9rem; line-height: 1.6; }
         .rec-list li::before { content: "•"; color: #3b82f6; margin-right: 8px; }
 
-        .tabs { display: flex; gap: 5px; background: white; padding: 5px; border-radius: 12px; margin-bottom: 25px; box-shadow: 0 1px 3px rgba(0,0,0,0.05); }
-        .tab-btn { flex: 1; border: none; background: transparent; padding: 12px; font-weight: 600; color: #6b7280; cursor: pointer; border-radius: 8px; transition: 0.2s; text-align: center; }
+        .tabs { display: flex; gap: 5px; background: white; padding: 5px; border-radius: 12px; margin-bottom: 25px; box-shadow: 0 1px 3px rgba(0,0,0,0.05); overflow-x: auto; }
+        .tab-btn { flex: 1; min-width: 100px; border: none; background: transparent; padding: 12px; font-weight: 600; color: #6b7280; cursor: pointer; border-radius: 8px; transition: 0.2s; text-align: center; white-space: nowrap; }
         .tab-btn:hover { background: #f9fafb; }
         .tab-btn.active { background: #fff; color: #2563eb; box-shadow: 0 2px 4px rgba(0,0,0,0.05); border: 1px solid var(--border); }
 
@@ -123,8 +145,8 @@ HTML_TEMPLATE = """
 
     <div class="tabs">
         <button class="tab-btn active" onclick="switchTab('overview')">Overview</button>
-        <button class="tab-btn" onclick="switchTab('charts')">Charts</button>
-        <button class="tab-btn" onclick="switchTab('disease')">Disease Reports</button>
+        <button class="tab-btn" onclick="switchTab('charts')">GPS Charts</button>
+        <button class="tab-btn" onclick="switchTab('trends')">Historical Trends</button> <button class="tab-btn" onclick="switchTab('disease')">Disease Reports</button>
         <button class="tab-btn" onclick="switchTab('esp32')">ESP32</button>
         <button class="tab-btn" onclick="switchTab('upload')">Upload</button>
         <button class="tab-btn" onclick="switchTab('export')">Export</button>
@@ -135,7 +157,9 @@ HTML_TEMPLATE = """
             <div class="card">
                 <h3>Air Quality Index</h3>
                 <div class="aqi-num" id="aqi-val">--</div>
-                <div style="text-align:center; color:#6b7280; font-size:0.9rem; margin-bottom:30px;">Sensitive individuals may be affected</div>
+                <div style="text-align:center; color:#6b7280; font-size:0.9rem; margin-bottom:30px;">
+                    <i class="fa-solid fa-location-dot"></i> <span id="location-name">Unknown Location</span>
+                </div>
                 <h3>Pollutant Levels</h3>
                 <div id="pollutant-bars"></div>
                 <div style="font-size:0.8rem; color:#9ca3af; margin-top:20px;">Last updated: <span id="last-update">--</span></div>
@@ -154,17 +178,24 @@ HTML_TEMPLATE = """
 
     <div id="charts" class="section">
         <div class="card">
-            <div style="display:flex; justify-content:space-between; align-items:center; margin-bottom:15px;">
-                <h3>Pollutant Levels vs GPS Coordinates</h3>
-                <select id="sensorSelector" onchange="renderMainChart()" style="padding:5px 10px; border-radius:6px; border:1px solid #d1d5db;">
-                    <option value="pm25">PM 2.5</option>
-                    <option value="pm10">PM 10</option>
-                    <option value="no2">Nitrogen Dioxide (NO₂)</option>
-                    <option value="so2">Sulfur Dioxide (SO₂)</option>
-                </select>
-            </div>
-            <p style="color:#6b7280; font-size:0.9rem; margin-bottom:15px;">Bars change color based on safety level</p>
+            <h3>Pollutant Levels vs Location</h3>
+            <p style="color:#6b7280; font-size:0.9rem; margin-bottom:15px;">Hover over bars to see Area/City Names</p>
             <div style="height:400px;"><canvas id="mainChart"></canvas></div>
+        </div>
+    </div>
+
+    <div id="trends" class="section">
+        <div class="card">
+            <h3><i class="fa-solid fa-chart-line"></i> Historical Trend Analysis</h3>
+            <p style="color:#6b7280; margin-bottom:20px;">Upload long-term data (CSV with Year/Date) to visualize trends.</p>
+            
+            <label class="upload-zone" style="padding: 30px; margin-bottom: 20px;">
+                <i class="fa-solid fa-calendar-days" style="font-size: 2rem; color: #9ca3af; margin-bottom:10px;"></i>
+                <div style="font-weight:600;">Upload Historical CSV</div>
+                <input type="file" id="historyInput" style="display:none;">
+            </label>
+
+            <div style="height:400px;"><canvas id="trendChart"></canvas></div>
         </div>
     </div>
 
@@ -183,12 +214,12 @@ HTML_TEMPLATE = """
             <button class="connect-btn" onclick="simulateConnect()"><i class="fa-solid fa-wifi"></i> Connect</button>
             <div class="setup-box">
                 <div style="font-weight:600; color:#1e40af; display:flex; align-items:center; gap:8px;">
-                    <i class="fa-solid fa-bolt"></i> ESP32 Setup Instructions:
+                    <i class="fa-solid fa-bolt"></i> ESP32 Setup:
                 </div>
                 <ol class="setup-list">
                     <li>Connect ESP32 to WiFi.</li>
                     <li>Endpoint: <code>/api/upload_sensor</code></li>
-                    <li>JSON Format: <code>{"pm25":25.5, "lat":17.38, "lon":78.48}</code></li>
+                    <li>JSON: <code>{"pm25":25.5, "lat":17.38, "lon":78.48}</code></li>
                 </ol>
             </div>
         </div>
@@ -196,7 +227,7 @@ HTML_TEMPLATE = """
 
     <div id="upload" class="section">
         <div class="card">
-            <h3><i class="fa-solid fa-file-arrow-up"></i> File Upload & SD Card Data</h3>
+            <h3><i class="fa-solid fa-file-arrow-up"></i> File Upload</h3>
             <label class="upload-zone">
                 <i class="fa-solid fa-cloud-arrow-up" style="font-size: 2.5rem; color: #9ca3af; margin-bottom:15px;"></i>
                 <div id="upload-text" style="font-weight:600;">Click to Browse Files</div>
@@ -216,13 +247,10 @@ HTML_TEMPLATE = """
         </div>
     </div>
 
-    <div class="footer">Made by SkySense Team | v4.0 GPS-Fix</div>
+    <div class="footer">Made by SkySense Team | v4.0</div>
 </div>
 
 <script>
-    let globalData = null;
-    let mainChart = null;
-
     function switchTab(tabId) {
         document.querySelectorAll('.section').forEach(el => el.classList.remove('active'));
         document.getElementById(tabId).classList.add('active');
@@ -238,6 +266,7 @@ HTML_TEMPLATE = """
 
     setInterval(() => { fetch('/api/data').then(res => res.json()).then(data => updateUI(data)); }, 3000);
 
+    // --- MAIN UPLOAD ---
     document.getElementById('fileInput').addEventListener('change', async (e) => {
         const file = e.target.files[0];
         if(!file) return;
@@ -251,15 +280,51 @@ HTML_TEMPLATE = """
         } catch(e) { alert(e); }
     });
 
+    // --- HISTORICAL UPLOAD ---
+    let trendChart = null;
+    document.getElementById('historyInput').addEventListener('change', async (e) => {
+        const file = e.target.files[0];
+        if(!file) return;
+        const fd = new FormData(); fd.append('file', file);
+        try {
+            const res = await fetch('/upload_history', { method: 'POST', body: fd });
+            const d = await res.json();
+            if(d.error) alert(d.error);
+            else { renderTrendChart(d.labels, d.values); }
+        } catch(e) { alert("Error uploading history: " + e); }
+    });
+
+    function renderTrendChart(labels, values) {
+        const ctx = document.getElementById('trendChart').getContext('2d');
+        if(trendChart) trendChart.destroy();
+        trendChart = new Chart(ctx, {
+            type: 'line',
+            data: {
+                labels: labels,
+                datasets: [{
+                    label: 'Historical AQI Trend',
+                    data: values,
+                    borderColor: '#3b82f6',
+                    backgroundColor: 'rgba(59, 130, 246, 0.1)',
+                    fill: true,
+                    tension: 0.4
+                }]
+            },
+            options: { responsive: true, maintainAspectRatio: false }
+        });
+    }
+
+    let mainChart = null;
+
     function updateUI(data) {
-        globalData = data;
-        
         // OVERVIEW
         document.getElementById('aqi-val').innerText = data.aqi;
         document.getElementById('aqi-badge').innerText = `AQI ${data.aqi}`;
         document.getElementById('aqi-score-box').innerText = data.aqi;
         document.getElementById('risk-count').innerText = data.health_risks.length;
         document.getElementById('last-update').innerText = data.last_updated;
+        document.getElementById('location-name').innerText = data.location_name; // CITY NAME HERE
+        
         if(data.connection_status === 'Connected') {
             document.getElementById('conn-status').innerText = 'Connected';
             document.getElementById('conn-status').classList.add('connected');
@@ -278,6 +343,45 @@ HTML_TEMPLATE = """
         if(data.health_risks.length > 0) data.health_risks[0].recs.forEach(r => recList.innerHTML += `<li>${r}</li>`);
         else recList.innerHTML = "<li>Safe for outdoor activities.</li>";
 
+        // CHART: GPS + CITY NAME TOOLTIP
+        if(data.chart_data.pm25.length > 0) {
+            const ctx = document.getElementById('mainChart').getContext('2d');
+            const colors = data.chart_data.pm25.map(val => val > 100 ? '#ef4444' : val > 50 ? '#eab308' : '#22c55e');
+            const labels = data.chart_data.gps.map(g => `${Number(g.lat).toFixed(4)}, ${Number(g.lon).toFixed(4)}`);
+            const cityNames = data.chart_data.gps.map(g => g.city || "Unknown Area");
+
+            if(mainChart) mainChart.destroy();
+            mainChart = new Chart(ctx, {
+                type: 'bar',
+                data: {
+                    labels: labels,
+                    datasets: [{
+                        label: 'PM2.5 Level',
+                        data: data.chart_data.pm25,
+                        backgroundColor: colors,
+                        borderRadius: 4
+                    }]
+                },
+                options: { 
+                    responsive: true, maintainAspectRatio: false,
+                    plugins: {
+                        tooltip: {
+                            callbacks: {
+                                label: function(context) {
+                                    let idx = context.dataIndex;
+                                    return `PM2.5: ${context.raw} | Area: ${cityNames[idx]}`;
+                                }
+                            }
+                        }
+                    },
+                    scales: { 
+                        x: { title: {display:true, text:'GPS Coordinates'}, ticks: {maxRotation: 45, minRotation: 45} },
+                        y: { title: {display:true, text:'Concentration (µg/m³)'} }
+                    }
+                }
+            });
+        }
+
         // DISEASE CARDS
         const dContainer = document.getElementById('disease-container'); dContainer.innerHTML = '';
         data.health_risks.forEach(r => {
@@ -295,45 +399,6 @@ HTML_TEMPLATE = """
         });
         
         document.getElementById('rep-aqi').innerText = data.aqi;
-        
-        // Render Initial Chart
-        renderMainChart();
-    }
-
-    function renderMainChart() {
-        if(!globalData || !globalData.chart_data.pm25.length) return;
-        
-        const selectedSensor = document.getElementById('sensorSelector').value;
-        const dataset = globalData.chart_data[selectedSensor];
-        const ctx = document.getElementById('mainChart').getContext('2d');
-        
-        // Limit: Safe<50, Mod<100, Danger>100
-        const limit1 = (selectedSensor === 'co') ? 5 : 50;
-        const limit2 = (selectedSensor === 'co') ? 15 : 100;
-
-        const colors = dataset.map(val => val > limit2 ? '#ef4444' : val > limit1 ? '#eab308' : '#22c55e');
-        const labels = globalData.chart_data.gps.map(g => `${Number(g.lat).toFixed(4)}, ${Number(g.lon).toFixed(4)}`);
-
-        if(mainChart) mainChart.destroy();
-        mainChart = new Chart(ctx, {
-            type: 'bar',
-            data: {
-                labels: labels,
-                datasets: [{
-                    label: selectedSensor.toUpperCase() + ' Level',
-                    data: dataset,
-                    backgroundColor: colors,
-                    borderRadius: 4
-                }]
-            },
-            options: { 
-                responsive: true, maintainAspectRatio: false,
-                scales: { 
-                    x: { title: {display:true, text:'GPS Coordinates (Lat, Lon)'}, ticks: {maxRotation: 45, minRotation: 45} },
-                    y: { title: {display:true, text:'Concentration (µg/m³)'}, beginAtZero: true }
-                }
-            }
-        });
     }
 </script>
 </body>
@@ -348,6 +413,7 @@ def home(): return render_template_string(HTML_TEMPLATE)
 @app.route('/api/data')
 def get_data(): return jsonify(current_data)
 
+# --- ROUTE 1: REGULAR UPLOAD ---
 @app.route('/upload', methods=['POST'])
 def upload_file():
     global current_data
@@ -358,21 +424,9 @@ def upload_file():
         elif file.filename.endswith(('.xlsx', '.xls')): df = pd.read_excel(file)
         else: return jsonify({"error": "Invalid file"}), 400
 
-        # --- SMART COLUMN MAPPER (FIXES GPS 0,0 ISSUE) ---
-        clean_cols = {}
-        for c in df.columns:
-            clean = re.sub(r'[^a-z0-9]', '', c.lower())
-            if clean in ['lat', 'latitude', 'gpslat', 'gpslatitude']: clean_cols[c] = 'lat'
-            elif clean in ['lon', 'long', 'longitude', 'gpslon', 'gpslongitude', 'lng']: clean_cols[c] = 'lon'
-            elif clean in ['pm25', 'pm25level']: clean_cols[c] = 'pm25'
-            elif clean in ['pm10', 'pm10level']: clean_cols[c] = 'pm10'
-            elif clean in ['no2', 'no2level']: clean_cols[c] = 'no2'
-            elif clean in ['so2', 'so2level']: clean_cols[c] = 'so2'
-            elif clean in ['co', 'colevel']: clean_cols[c] = 'co'
-        
-        df = df.rename(columns=clean_cols)
-        
-        # Ensure critical columns exist
+        df.columns = [re.sub(r'[^a-z0-9]', '', c.lower()) for c in df.columns]
+        mapper = {'pm25':'pm25', 'pm10':'pm10', 'no2':'no2', 'so2':'so2', 'co':'co', 'lat':'lat', 'lon':'lon'}
+        df = df.rename(columns={c: mapper[c] for c in df.columns if c in mapper})
         for c in ['pm25','pm10','no2','so2','co']: 
             if c not in df.columns: df[c] = 0
         if 'lat' not in df.columns: df['lat'] = 0.0
@@ -381,11 +435,25 @@ def upload_file():
         val = {k: round(df[k].mean(), 1) for k in ['pm25','pm10','no2','so2','co']}
         aqi = int((val['pm25']*2) + (val['pm10']*0.5))
         
+        # Determine Location (using first/avg point)
+        lat_center = df['lat'].mean()
+        lon_center = df['lon'].mean()
+        loc_name = get_city_name(lat_center, lon_center)
+
+        # Chart Data (Add City Name to each point for tooltip)
         c_data = {k: df[k].head(50).tolist() for k in val.keys()}
-        c_data['gps'] = [{"lat": r['lat'], "lon": r['lon']} for _, r in df.head(50).iterrows()]
+        gps_list = []
+        for _, r in df.head(50).iterrows():
+            gps_list.append({
+                "lat": r['lat'], 
+                "lon": r['lon'],
+                "city": get_city_name(r['lat'], r['lon']) if _ % 5 == 0 else loc_name # optimize calls
+            })
+        c_data['gps'] = gps_list
 
         current_data.update({
             "aqi": aqi, **val, "status": "Updated",
+            "location_name": loc_name,
             "health_risks": calculate_advanced_health(val),
             "chart_data": c_data,
             "last_updated": datetime.now().strftime("%H:%M:%S"),
@@ -394,6 +462,28 @@ def upload_file():
         return jsonify({"message": "Success", "data": current_data})
     except Exception as e: return jsonify({"error": str(e)}), 500
 
+# --- ROUTE 2: HISTORICAL UPLOAD ---
+@app.route('/upload_history', methods=['POST'])
+def upload_history():
+    if 'file' not in request.files: return jsonify({"error": "No file"}), 400
+    file = request.files['file']
+    try:
+        df = pd.read_csv(file)
+        # Look for date/year/month columns
+        date_col = next((c for c in df.columns if 'date' in c.lower() or 'year' in c.lower() or 'time' in c.lower()), None)
+        val_col = next((c for c in df.columns if 'aqi' in c.lower() or 'pm25' in c.lower()), None)
+        
+        if not date_col or not val_col:
+            return jsonify({"error": "CSV must have 'Date' and 'AQI' columns"}), 400
+            
+        df = df.sort_values(by=date_col)
+        return jsonify({
+            "labels": df[date_col].astype(str).tolist(),
+            "values": df[val_col].tolist()
+        })
+    except Exception as e: return jsonify({"error": str(e)}), 500
+
+# --- ROUTE 3: ESP32 ---
 @app.route('/api/upload_sensor', methods=['POST'])
 def receive_sensor():
     global current_data
@@ -405,23 +495,27 @@ def receive_sensor():
         current_data['last_updated'] = datetime.now().strftime("%H:%M:%S")
         current_data['connection_status'] = "Connected"
         
+        # Get City Name (Live)
+        current_data['location_name'] = get_city_name(data.get('lat',0), data.get('lon',0))
+
+        # Append Data
         for k in ['pm25','pm10','no2','so2','co']:
             current_data['chart_data'][k].append(data.get(k, 0))
             if len(current_data['chart_data'][k]) > 50: current_data['chart_data'][k].pop(0)
         
-        current_data['chart_data']['gps'].append({"lat": data.get('lat',0), "lon": data.get('lon',0)})
+        current_data['chart_data']['gps'].append({
+            "lat": data.get('lat',0), "lon": data.get('lon',0),
+            "city": current_data['location_name']
+        })
         if len(current_data['chart_data']['gps']) > 50: current_data['chart_data']['gps'].pop(0)
 
-        current_data['esp32_log'].append(f"> [REC] AQI: {current_data['aqi']} | GPS: {data.get('lat')}")
-        if len(current_data['esp32_log']) > 20: current_data['esp32_log'].pop(0)
-        
         return jsonify({"status": "success"})
     except Exception as e: return jsonify({"error": str(e)}), 400
 
 @app.route('/export')
 def export_report():
     output = io.StringIO()
-    output.write(f"Report Date,{datetime.now()}\nAQI,{current_data['aqi']}\n\nPollutant,Value\n")
+    output.write(f"Report Date,{datetime.now()}\nLocation,{current_data['location_name']}\nAQI,{current_data['aqi']}\n\nPollutant,Value\n")
     for k in ['pm25','pm10','no2','so2','co']: output.write(f"{k},{current_data[k]}\n")
     mem = io.BytesIO()
     mem.write(output.getvalue().encode('utf-8'))
