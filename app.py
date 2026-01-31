@@ -8,7 +8,7 @@ from datetime import datetime
 # Geopy for City Names
 try:
     from geopy.geocoders import Nominatim
-    geolocator = Nominatim(user_agent="skysense_final_v8")
+    geolocator = Nominatim(user_agent="skysense_final_v9")
 except ImportError:
     geolocator = None
 
@@ -19,36 +19,31 @@ current_data = {
     "aqi": 0, 
     "pm1": 0, "pm25": 0, "pm10": 0, 
     "temp": 0, "hum": 0, "press": 0, "gas": 0, "alt": 0,
-    "lat": 0, "lon": 0,
     "status": "Waiting...",
     "location_name": "Waiting for Data...",
     "health_risks": [],
-    "chart_data": {"pm25":[], "temp":[], "hum":[], "gps":[]},
+    # Added 'aqi' list for the chart
+    "chart_data": {"aqi":[], "gps":[]},
     "esp32_log": ["> System Initialized...", "> Waiting for Data stream..."],
     "last_updated": "Never",
     "connection_status": "Listening"
 }
 
-# --- SMART COLUMN FIXER (ALL 10 PARAMS) ---
+# --- SMART COLUMN FIXER ---
 def normalize_columns(df):
     col_map = {}
     for col in df.columns:
         c_lower = col.lower().strip()
-        # 1. PM Metrics
         if 'pm1.0' in c_lower or 'pm1' in c_lower and 'pm10' not in c_lower: col_map[col] = 'pm1'
         elif 'pm2.5' in c_lower or 'pm25' in c_lower: col_map[col] = 'pm25'
         elif 'pm10' in c_lower: col_map[col] = 'pm10'
-        # 2. Environmental
         elif 'temp' in c_lower: col_map[col] = 'temp'
         elif 'hum' in c_lower: col_map[col] = 'hum'
         elif 'press' in c_lower: col_map[col] = 'press'
-        elif 'gas' in c_lower or 'res' in c_lower: col_map[col] = 'gas'
-        # 3. Location
+        elif 'gas' in c_lower: col_map[col] = 'gas'
         elif 'alt' in c_lower: col_map[col] = 'alt'
         elif 'lat' in c_lower: col_map[col] = 'lat'
         elif 'lon' in c_lower or 'lng' in c_lower: col_map[col] = 'lon'
-        # 4. Time
-        elif 'date' in c_lower or 'time' in c_lower: col_map[col] = 'timestamp'
     return df.rename(columns=col_map)
 
 # --- CITY NAME HELPER ---
@@ -63,34 +58,66 @@ def get_city_name(lat, lon):
         return "Unknown Area"
     return "Unknown Area"
 
-# --- HEALTH ENGINE ---
+# --- EXPANDED HEALTH ENGINE (5+ Risks) ---
 def calculate_advanced_health(val):
     risks = []
     
-    # 1. Respiratory (PM Based)
-    pm_score = max(val['pm25'], val['pm10']*0.5)
-    if pm_score > 50:
+    # 1. Fine Particle Toxicity (PM2.5 specific)
+    if val['pm25'] > 35:
         risks.append({
-            "name": "Respiratory Stress", "prob": min(100, int(pm_score)), "level": "High" if pm_score > 100 else "Moderate",
-            "symptoms": ["Coughing", "Throat irritation", "Shortness of breath"],
-            "recs": ["Wear mask outdoors", "Use air purifier", "Close windows"]
+            "name": "Fine Particle Toxicity", "prob": min(95, int(val['pm25']*1.5)), "level": "High",
+            "symptoms": ["Deep lung irritation", "Bloodstream absorption"],
+            "recs": ["Use HEPA filter", "Wear N95 mask"]
         })
 
-    # 2. Heat Stress (Temp + Humidity)
-    if val['temp'] > 35:
+    # 2. Upper Respiratory Stress (PM10 specific)
+    if val['pm10'] > 50:
         risks.append({
-            "name": "Heat Stress", "prob": 80, "level": "High",
-            "symptoms": ["Dehydration", "Fatigue", "Heat exhaustion"],
-            "recs": ["Hydrate frequently", "Avoid direct sun", "Seek shade"]
+            "name": "Upper Airway Stress", "prob": min(90, int(val['pm10'])), "level": "Moderate",
+            "symptoms": ["Coughing", "Throat scratchiness"],
+            "recs": ["Drink water", "Avoid dusty areas"]
         })
-        
-    # 3. Altitude Sickness (If High Alt)
-    if val['alt'] > 2500:
+
+    # 3. Heat Stress (Temp)
+    if val['temp'] > 30:
         risks.append({
-            "name": "Altitude Hypoxia", "prob": 60, "level": "Moderate",
-            "symptoms": ["Dizziness", "Headache", "Shortness of breath"],
-            "recs": ["Limit physical exertion", "Monitor oxygen levels"]
+            "name": "Heat Stress Risk", "prob": min(100, int((val['temp']-30)*10)), "level": "High",
+            "symptoms": ["Dehydration", "Fatigue"],
+            "recs": ["Hydrate frequently", "Seek shade"]
         })
+    elif val['temp'] < 10:
+        risks.append({
+            "name": "Hypothermia Risk", "prob": 40, "level": "Moderate",
+            "symptoms": ["Shivering", "Numbness"],
+            "recs": ["Wear thermal clothing"]
+        })
+
+    # 4. Viral Spread / Comfort (Humidity)
+    if val['hum'] < 40:
+        risks.append({
+            "name": "Viral Transmission", "prob": 65, "level": "Moderate",
+            "symptoms": ["Dry mucous membranes", "Flu susceptibility"],
+            "recs": ["Use humidifier", "Moisturize skin"]
+        })
+    elif val['hum'] > 70:
+        risks.append({
+            "name": "Mold & Bacteria Growth", "prob": 70, "level": "High",
+            "symptoms": ["Allergic reactions", "Congestion"],
+            "recs": ["Use dehumidifier", "Ventilate area"]
+        })
+
+    # 5. General Asthma (Combined)
+    asthma_score = (val['pm25'] + val['pm10']) / 2
+    if asthma_score > 40:
+        risks.append({
+            "name": "Asthma Trigger", "prob": min(100, int(asthma_score)), "level": "High",
+            "symptoms": ["Wheezing", "Shortness of breath"],
+            "recs": ["Keep rescue inhaler ready", "Stay indoors"]
+        })
+
+    # Fallback if air is clean
+    if not risks:
+        risks.append({"name": "Optimal Conditions", "prob": 5, "level": "Safe", "symptoms": ["None"], "recs": ["Enjoy outdoor activities"]})
 
     return risks
 
@@ -114,23 +141,24 @@ HTML_TEMPLATE = """
         .logo { font-size: 1.5rem; font-weight: 700; color: #2563eb; display: flex; align-items: center; gap: 8px; }
         .refresh-btn { background: #111827; color: white; border: none; padding: 8px 16px; border-radius: 6px; cursor: pointer; }
         .alert-banner { background: #fffbeb; border: 1px solid #fcd34d; color: #92400e; padding: 20px; border-radius: 12px; margin-bottom: 25px; }
-        .tabs { display: flex; gap: 5px; background: white; padding: 5px; border-radius: 12px; margin-bottom: 25px; overflow-x: auto; }
-        .tab-btn { flex: 1; min-width: 100px; border: none; background: transparent; padding: 12px; font-weight: 600; color: #6b7280; cursor: pointer; border-radius: 8px; transition: 0.2s; white-space: nowrap; }
+        
+        .tabs { display: flex; gap: 5px; background: white; padding: 5px; border-radius: 12px; margin-bottom: 25px; }
+        .tab-btn { flex: 1; border: none; background: transparent; padding: 12px; font-weight: 600; color: #6b7280; cursor: pointer; border-radius: 8px; transition: 0.2s; }
         .tab-btn.active { background: #fff; color: #2563eb; box-shadow: 0 2px 4px rgba(0,0,0,0.05); }
         .section { display: none; }
         .section.active { display: block; }
+        
         .grid-2 { display: grid; grid-template-columns: 1fr 1fr; gap: 20px; }
         @media(max-width: 768px) { .grid-2 { grid-template-columns: 1fr; } }
         .card { background: var(--card); border-radius: 16px; padding: 25px; border: 1px solid var(--border); box-shadow: 0 1px 2px rgba(0,0,0,0.05); }
-        .aqi-num { font-size: 5rem; font-weight: 800; color: #ea580c; line-height: 1; text-align: center; margin-bottom: 10px; }
+        .aqi-num { font-size: 6rem; font-weight: 800; color: #ea580c; line-height: 1; text-align: center; margin-bottom: 5px; }
         
-        /* METRICS GRID */
-        .metric-grid { display: grid; grid-template-columns: repeat(3, 1fr); gap: 15px; margin-top: 20px; }
-        .metric-box { background: #f3f4f6; padding: 10px; border-radius: 8px; text-align: center; }
-        .metric-val { font-weight: 700; color: #111827; font-size: 1.1rem; }
-        .metric-label { font-size: 0.75rem; color: #6b7280; margin-top: 2px; }
+        /* 5-ITEM METRIC GRID */
+        .metric-grid { display: grid; grid-template-columns: repeat(3, 1fr); gap: 15px; margin-top: 30px; }
+        .metric-box { background: #f3f4f6; padding: 15px; border-radius: 12px; text-align: center; }
+        .metric-val { font-weight: 700; color: #111827; font-size: 1.2rem; }
+        .metric-label { font-size: 0.8rem; color: #6b7280; margin-top: 4px; font-weight:600; }
 
-        /* ESP32 DARK */
         .esp-dark-card { background: #111827; color: white; border-radius: 16px; padding: 25px; height: 100%; }
         .console-dark { background: #1f2937; color: #4ade80; padding: 20px; border-radius: 8px; font-family: monospace; height: 200px; overflow-y: auto; }
         
@@ -148,14 +176,13 @@ HTML_TEMPLATE = """
     </div>
 
     <div class="alert-banner">
-        <div style="font-weight:700; margin-bottom:10px;"><i class="fa-solid fa-circle-info"></i> Health Alert <span style="background:#fcd34d; padding:2px 8px; border-radius:12px; font-size:0.8rem;">AQI <span id="aqi-badge">--</span></span></div>
-        <div id="alert-msg">Waiting for data...</div>
+        <div style="font-weight:700; margin-bottom:10px;"><i class="fa-solid fa-circle-info"></i> System Status</div>
+        <div id="alert-msg">Waiting for sensor input...</div>
     </div>
 
     <div class="tabs">
         <button class="tab-btn active" onclick="switchTab('overview')">Overview</button>
         <button class="tab-btn" onclick="switchTab('charts')">GPS Charts</button>
-        <button class="tab-btn" onclick="switchTab('trends')">History Trends</button>
         <button class="tab-btn" onclick="switchTab('disease')">Disease Reports</button>
         <button class="tab-btn" onclick="switchTab('esp32')">ESP32</button>
         <button class="tab-btn" onclick="switchTab('upload')">Upload</button>
@@ -167,19 +194,17 @@ HTML_TEMPLATE = """
             <div class="card">
                 <h3>Real-Time Air Quality</h3>
                 <div class="aqi-num" id="aqi-val">--</div>
-                <div style="text-align:center; color:#6b7280; font-size:0.9rem;">
+                <div style="text-align:center; color:#6b7280; font-size:1.2rem; font-weight:600;">AQI (US)</div>
+                <div style="text-align:center; color:#9ca3af; font-size:0.9rem; margin-top:10px;">
                     <i class="fa-solid fa-location-dot"></i> <span id="location-name">Unknown</span>
                 </div>
+                
                 <div class="metric-grid">
                     <div class="metric-box"><div class="metric-val" id="val-pm1">--</div><div class="metric-label">PM 1.0</div></div>
                     <div class="metric-box"><div class="metric-val" id="val-pm25">--</div><div class="metric-label">PM 2.5</div></div>
                     <div class="metric-box"><div class="metric-val" id="val-pm10">--</div><div class="metric-label">PM 10</div></div>
                     <div class="metric-box"><div class="metric-val" id="val-temp">--°C</div><div class="metric-label">Temp</div></div>
                     <div class="metric-box"><div class="metric-val" id="val-hum">--%</div><div class="metric-label">Humidity</div></div>
-                    <div class="metric-box"><div class="metric-val" id="val-press">--</div><div class="metric-label">Pressure</div></div>
-                    <div class="metric-box"><div class="metric-val" id="val-gas">--</div><div class="metric-label">Gas Res</div></div>
-                    <div class="metric-box"><div class="metric-val" id="val-alt">-- m</div><div class="metric-label">Altitude</div></div>
-                    <div class="metric-box"><div class="metric-val" id="val-latlon">--</div><div class="metric-label">GPS</div></div>
                 </div>
             </div>
             <div class="card">
@@ -191,17 +216,9 @@ HTML_TEMPLATE = """
 
     <div id="charts" class="section">
         <div class="card">
-            <h3>Pollutant Levels vs GPS Coordinates</h3>
-            <p style="color:#6b7280; font-size:0.9rem; margin-bottom:15px;">Combined view of PM2.5 and Temperature along flight path</p>
+            <h3>AQI Level vs Flight Path</h3>
+            <p style="color:#6b7280; font-size:0.9rem; margin-bottom:15px;">Air Quality Index mapped to GPS Coordinates</p>
             <div style="height:400px;"><canvas id="mainChart"></canvas></div>
-        </div>
-    </div>
-
-    <div id="trends" class="section">
-        <div class="card">
-            <h3>Historical Data Trends</h3>
-            <p style="color:#6b7280;">Upload CSV containing "Date" or "Time" column to view trends.</p>
-            <div style="height:400px;"><canvas id="trendChart"></canvas></div>
         </div>
     </div>
 
@@ -218,10 +235,6 @@ HTML_TEMPLATE = """
                 <div style="margin-top:20px; font-size:0.9rem;">
                     <p><strong>Endpoint:</strong> <code style="background:#374151; padding:2px 6px;">/api/upload_sensor</code></p>
                     <p><strong>Status:</strong> <span style="color:#4ade80;">● Listening</span></p>
-                    <p style="margin-top:20px; color:#9ca3af;">Supported JSON Keys:</p>
-                    <code style="background:#1f2937; display:block; padding:10px; color:#d1d5db; font-size:0.8rem;">
-                        temp, hum, press, gas, pm1, pm25, pm10, alt, lat, lon
-                    </code>
                 </div>
             </div>
             <div class="esp-dark-card">
@@ -234,7 +247,6 @@ HTML_TEMPLATE = """
     <div id="upload" class="section">
         <div class="card">
             <h3>Upload Data File</h3>
-            <p style="color:#6b7280; margin-bottom:15px;">Supports CSV/Excel with columns: Temp, Hum, Press, Gas, PM1, PM2.5, PM10, Alt, Lat, Lon, Date</p>
             <label class="upload-zone">
                 <i class="fa-solid fa-cloud-arrow-up" style="font-size: 2rem; color: #9ca3af;"></i>
                 <div id="upload-text" style="font-weight:600; margin-top:10px;">Click to Browse</div>
@@ -250,7 +262,7 @@ HTML_TEMPLATE = """
         </div>
     </div>
 
-    <div class="footer">Made by SkySense Team | v8.0</div>
+    <div class="footer">Made by SkySense Team | v9.0</div>
 </div>
 
 <script>
@@ -263,7 +275,6 @@ HTML_TEMPLATE = """
 
     setInterval(() => { fetch('/api/data').then(res => res.json()).then(data => updateUI(data)); }, 3000);
 
-    // MAIN UPLOAD
     document.getElementById('fileInput').addEventListener('change', async (e) => {
         const file = e.target.files[0];
         if(!file) return;
@@ -273,76 +284,73 @@ HTML_TEMPLATE = """
             const res = await fetch('/upload', { method: 'POST', body: fd });
             const d = await res.json();
             if(d.error) alert(d.error);
-            else { 
-                txt.innerText = "Success!"; 
-                updateUI(d.data); 
-                // Render Trend Chart if labels exist
-                if(d.data.trend_labels && d.data.trend_labels.length > 0) {
-                    renderTrendChart(d.data.trend_labels, d.data.trend_values);
-                }
-                setTimeout(()=>switchTab('overview'), 500); 
-            }
+            else { txt.innerText = "Success!"; updateUI(d.data); setTimeout(()=>switchTab('overview'), 500); }
         } catch(e) { alert(e); }
     });
 
-    let trendChart = null;
-    function renderTrendChart(labels, values) {
-        const ctx = document.getElementById('trendChart').getContext('2d');
-        if(trendChart) trendChart.destroy();
-        trendChart = new Chart(ctx, {
-            type: 'line',
-            data: { labels: labels, datasets: [{ label: 'PM2.5 Trend', data: values, borderColor: '#3b82f6', fill: true, tension: 0.4 }] },
-            options: { responsive: true, maintainAspectRatio: false }
-        });
-    }
-
     let mainChart = null;
     function updateUI(data) {
+        // OVERVIEW
         document.getElementById('aqi-val').innerText = data.aqi;
-        document.getElementById('aqi-badge').innerText = data.aqi;
         document.getElementById('location-name').innerText = data.location_name;
-        document.getElementById('alert-msg').innerText = data.aqi > 100 ? "Unhealthy Air Quality" : "Good Air Quality";
+        document.getElementById('alert-msg').innerText = data.aqi > 100 ? "Warning: Poor Air Quality" : "Air Quality is Good";
 
-        ['pm1','pm25','pm10','temp','hum','press','gas','alt'].forEach(k => {
+        // ONLY 5 METRICS
+        ['pm1','pm25','pm10','temp','hum'].forEach(k => {
             if(document.getElementById('val-'+k)) document.getElementById('val-'+k).innerText = data[k];
         });
-        document.getElementById('val-latlon').innerText = `${data.lat}, ${data.lon}`;
 
+        // RISKS (Expanded List)
         const qContainer = document.getElementById('quick-risks'); qContainer.innerHTML = '';
-        data.health_risks.forEach(r => qContainer.innerHTML += `<div style="display:flex; justify-content:space-between; padding:10px 0; border-bottom:1px solid #eee;"><span>${r.name}</span><strong>${r.prob}%</strong></div>`);
+        data.health_risks.forEach(r => qContainer.innerHTML += `
+            <div style="display:flex; justify-content:space-between; align-items:center; padding:12px 0; border-bottom:1px solid #eee;">
+                <span>${r.name}</span>
+                <span style="font-size:0.85rem; font-weight:700; color:${r.level==='High'?'#ef4444':'#f59e0b'}">${r.level} (${r.prob}%)</span>
+            </div>`);
 
-        // CHART
-        if(data.chart_data.pm25.length > 0) {
+        // CHART: AQI vs GPS
+        if(data.chart_data.aqi.length > 0) {
             const ctx = document.getElementById('mainChart').getContext('2d');
             const labels = data.chart_data.gps.map(g => `${Number(g.lat).toFixed(4)},${Number(g.lon).toFixed(4)}`);
             const cities = data.chart_data.gps.map(g => g.city || "Unknown");
+            
+            // Color logic for AQI bars
+            const colors = data.chart_data.aqi.map(v => v > 150 ? '#ef4444' : v > 100 ? '#f97316' : v > 50 ? '#eab308' : '#22c55e');
 
             if(mainChart) mainChart.destroy();
             mainChart = new Chart(ctx, {
                 type: 'bar',
                 data: {
                     labels: labels,
-                    datasets: [
-                        { label: 'PM2.5', data: data.chart_data.pm25, backgroundColor: '#3b82f6', order: 2 },
-                        { label: 'Temp', data: data.chart_data.temp, borderColor: '#ef4444', type: 'line', fill: false, order: 1 }
-                    ]
+                    datasets: [{ 
+                        label: 'AQI Level', 
+                        data: data.chart_data.aqi, 
+                        backgroundColor: colors,
+                        borderRadius: 4
+                    }]
                 },
                 options: { 
                     responsive: true, maintainAspectRatio: false,
-                    plugins: { tooltip: { callbacks: { label: function(c) { return `${c.dataset.label}: ${c.raw} | ${cities[c.dataIndex]}`; } } } },
-                    scales: { x: { title: {display:true, text:'GPS Coordinates'}, ticks: {maxRotation: 45, minRotation: 45} } }
+                    plugins: { tooltip: { callbacks: { label: function(c) { return `AQI: ${c.raw} | ${cities[c.dataIndex]}`; } } } },
+                    scales: { 
+                        x: { title: {display:true, text:'GPS Coordinates'}, ticks: {maxRotation: 45, minRotation: 45} },
+                        y: { title: {display:true, text:'AQI Value'}, beginAtZero: true }
+                    }
                 }
             });
         }
         
-        // DISEASE
+        // DISEASE REPORTS
         const dContainer = document.getElementById('disease-container'); dContainer.innerHTML = '';
         data.health_risks.forEach(r => {
             dContainer.innerHTML += `
             <div style="background:white; border:1px solid #e5e7eb; border-radius:12px; padding:20px; margin-bottom:20px; border-left:5px solid ${r.level==='High'?'#ef4444':'#3b82f6'};">
-                <h3>${r.name} <span style="font-size:0.8rem; background:#f3f4f6; padding:2px 8px; border-radius:10px;">${r.level}</span></h3>
-                <p>Symptoms: ${r.symptoms.join(', ')}</p>
-                <ul style="padding-left:20px; margin-top:5px; color:#4b5563;">${r.recs.map(rec => `<li>${rec}</li>`).join('')}</ul>
+                <div style="display:flex; justify-content:space-between;">
+                    <h3>${r.name}</h3>
+                    <span style="font-weight:700; color:${r.level==='High'?'#ef4444':'#3b82f6'}">${r.level}</span>
+                </div>
+                <p style="font-size:0.9rem; color:#6b7280; margin-bottom:10px;">Symptoms: ${r.symptoms.join(', ')}</p>
+                <ul style="padding-left:20px; margin:0; color:#4b5563;">${r.recs.map(rec => `<li>${rec}</li>`).join('')}</ul>
             </div>`;
         });
 
@@ -373,44 +381,35 @@ def upload_file():
 
         df = normalize_columns(df)
         
-        # Fill missing
+        # Fill missing columns
         all_cols = ['pm1','pm25','pm10','temp','hum','press','gas','alt','lat','lon']
         for c in all_cols: 
             if c not in df.columns: df[c] = 0
 
-        # Calculate Averages
+        # Calculate Averages for Display
         val = {k: round(df[k].mean(), 1) for k in all_cols}
         aqi = int((val['pm25']*2) + (val['pm10']*0.5))
         
-        # Location
+        # Get City
         valid_gps = df[(df['lat'] != 0) & (df['lon'] != 0)]
         loc_name = get_city_name(valid_gps.iloc[0]['lat'], valid_gps.iloc[0]['lon']) if not valid_gps.empty else "No GPS Data"
 
-        # Chart Arrays
-        c_data = {k: df[k].head(50).tolist() for k in ['pm25','temp','hum']}
+        # Prepare Chart Data (AQI vs GPS)
         gps_list = []
+        aqi_list = []
         for i, r in df.head(50).iterrows():
+            row_aqi = int((r['pm25']*2) + (r['pm10']*0.5))
+            aqi_list.append(row_aqi)
             gps_list.append({
                 "lat": r['lat'], "lon": r['lon'],
                 "city": get_city_name(r['lat'], r['lon']) if i % 5 == 0 else loc_name
             })
-        c_data['gps'] = gps_list
-        
-        # Trend Data (If timestamp exists)
-        trend_labels = []
-        trend_values = []
-        if 'timestamp' in df.columns:
-            df = df.sort_values(by='timestamp')
-            trend_labels = df['timestamp'].astype(str).tolist()
-            trend_values = df['pm25'].tolist()
 
         current_data.update({
             "aqi": aqi, **val, "status": "Updated",
             "location_name": loc_name,
             "health_risks": calculate_advanced_health(val),
-            "chart_data": c_data,
-            "trend_labels": trend_labels, # Pass for history
-            "trend_values": trend_values,
+            "chart_data": {"aqi": aqi_list, "gps": gps_list},
             "last_updated": datetime.now().strftime("%H:%M:%S"),
             "connection_status": "Connected"
         })
@@ -430,9 +429,9 @@ def receive_sensor():
         current_data['location_name'] = get_city_name(data.get('lat',0), data.get('lon',0))
         current_data['last_updated'] = datetime.now().strftime("%H:%M:%S")
 
-        for k in ['pm25','temp','hum']:
-            current_data['chart_data'][k].append(data.get(k, 0))
-            if len(current_data['chart_data'][k]) > 50: current_data['chart_data'][k].pop(0)
+        # Update Chart Arrays
+        current_data['chart_data']['aqi'].append(aqi)
+        if len(current_data['chart_data']['aqi']) > 50: current_data['chart_data']['aqi'].pop(0)
         
         current_data['chart_data']['gps'].append({
             "lat": data.get('lat',0), "lon": data.get('lon',0),
@@ -440,7 +439,7 @@ def receive_sensor():
         })
         if len(current_data['chart_data']['gps']) > 50: current_data['chart_data']['gps'].pop(0)
 
-        current_data['esp32_log'].append(f"> [REC] T:{data.get('temp')} | PM25:{data.get('pm25')}")
+        current_data['esp32_log'].append(f"> [REC] AQI:{aqi} | T:{data.get('temp')}")
         if len(current_data['esp32_log']) > 20: current_data['esp32_log'].pop(0)
         
         return jsonify({"status": "success"})
