@@ -15,6 +15,8 @@ except ImportError:
 app = Flask(__name__)
 
 # --- GLOBAL DATA STORE ---
+history_log = [] # Stores the list of uploaded files
+
 current_data = {
     "aqi": 0, 
     "pm1": 0, "pm25": 0, "pm10": 0, 
@@ -41,7 +43,6 @@ def normalize_columns(df):
         elif 'press' in c_lower: col_map[col] = 'press'
         elif 'gas' in c_lower: col_map[col] = 'gas'
         elif 'alt' in c_lower: col_map[col] = 'alt'
-        # Fix for typo 'lalitude'
         elif 'lat' in c_lower or 'lal' in c_lower: col_map[col] = 'lat'
         elif 'lon' in c_lower or 'lng' in c_lower: col_map[col] = 'lon'
     return df.rename(columns=col_map)
@@ -62,7 +63,6 @@ def get_city_name(lat, lon):
 def calculate_advanced_health(val):
     risks = []
     
-    # 1. Fine Particle Toxicity
     if val['pm25'] > 35:
         risks.append({
             "name": "Fine Particle Toxicity", "prob": min(95, int(val['pm25']*1.5)), "level": "High",
@@ -70,7 +70,6 @@ def calculate_advanced_health(val):
             "recs": ["Use HEPA filter", "Wear N95 mask"]
         })
 
-    # 2. Upper Respiratory Stress
     if val['pm10'] > 50:
         risks.append({
             "name": "Upper Airway Stress", "prob": min(90, int(val['pm10'])), "level": "Moderate",
@@ -78,7 +77,6 @@ def calculate_advanced_health(val):
             "recs": ["Drink water", "Avoid dusty areas"]
         })
 
-    # 3. Heat Stress
     if val['temp'] > 30:
         risks.append({
             "name": "Heat Stress Risk", "prob": min(100, int((val['temp']-30)*10)), "level": "High",
@@ -86,7 +84,6 @@ def calculate_advanced_health(val):
             "recs": ["Hydrate frequently", "Seek shade"]
         })
 
-    # 4. Viral Spread
     if val['hum'] < 40:
         risks.append({
             "name": "Viral Transmission", "prob": 65, "level": "Moderate",
@@ -94,7 +91,6 @@ def calculate_advanced_health(val):
             "recs": ["Use humidifier", "Moisturize skin"]
         })
 
-    # 5. Asthma
     asthma_score = (val['pm25'] + val['pm10']) / 2
     if asthma_score > 40:
         risks.append({
@@ -148,7 +144,14 @@ HTML_TEMPLATE = """
         .esp-dark-card { background: #111827; color: white; border-radius: 16px; padding: 25px; height: 100%; }
         .console-dark { background: #1f2937; color: #4ade80; padding: 20px; border-radius: 8px; font-family: monospace; height: 200px; overflow-y: auto; }
         
-        .upload-zone { border: 2px dashed #d1d5db; padding: 40px; text-align: center; border-radius: 12px; cursor: pointer; background: #f9fafb; }
+        .upload-zone { border: 2px dashed #d1d5db; padding: 40px; text-align: center; border-radius: 12px; cursor: pointer; background: #f9fafb; margin-top: 20px; }
+        .date-input { width: 100%; padding: 12px; border: 1px solid #d1d5db; border-radius: 8px; margin-bottom: 10px; font-family: 'Inter', sans-serif; }
+        
+        .history-item { display: flex; justify-content: space-between; align-items: center; padding: 15px; border-bottom: 1px solid #f3f4f6; }
+        .history-item:last-child { border-bottom: none; }
+        .history-date { font-weight: 700; color: #2563eb; }
+        .history-details { color: #6b7280; font-size: 0.9rem; }
+
         .btn-black { background: #111827; color: white; border: none; padding: 12px 20px; border-radius: 8px; width: 100%; font-weight: 600; cursor: pointer; text-decoration: none; display: inline-block; text-align: center; }
         .footer { text-align: center; margin-top: 40px; font-size: 0.8rem; color: #9ca3af; }
     </style>
@@ -169,6 +172,7 @@ HTML_TEMPLATE = """
     <div class="tabs">
         <button class="tab-btn active" onclick="switchTab('overview')">Overview</button>
         <button class="tab-btn" onclick="switchTab('charts')">GPS Charts</button>
+        <button class="tab-btn" onclick="switchTab('history')">History</button>
         <button class="tab-btn" onclick="switchTab('disease')">Disease Reports</button>
         <button class="tab-btn" onclick="switchTab('esp32')">ESP32</button>
         <button class="tab-btn" onclick="switchTab('upload')">Upload</button>
@@ -208,6 +212,16 @@ HTML_TEMPLATE = """
         </div>
     </div>
 
+    <div id="history" class="section">
+        <div class="card">
+            <h3>Uploaded Data History</h3>
+            <p style="color:#6b7280; margin-bottom:20px;">List of all files uploaded, sorted by date (Latest first).</p>
+            <div id="history-list">
+                <p style="text-align:center; color:#9ca3af; padding:20px;">No files uploaded yet.</p>
+            </div>
+        </div>
+    </div>
+
     <div id="disease" class="section">
         <div class="card" style="border:none; box-shadow:none; padding:0;">
             <div id="disease-container"></div>
@@ -233,9 +247,13 @@ HTML_TEMPLATE = """
     <div id="upload" class="section">
         <div class="card">
             <h3>Upload Data File</h3>
+            <p style="color:#6b7280; font-size:0.9rem; margin-bottom:15px;">Please select the date of data collection before uploading.</p>
+            
+            <input type="date" id="upload-date" class="date-input" required>
+            
             <label class="upload-zone">
                 <i class="fa-solid fa-cloud-arrow-up" style="font-size: 2rem; color: #9ca3af;"></i>
-                <div id="upload-text" style="font-weight:600; margin-top:10px;">Click to Browse</div>
+                <div id="upload-text" style="font-weight:600; margin-top:10px;">Click to Browse File</div>
                 <input type="file" id="fileInput" style="display:none;">
             </label>
         </div>
@@ -248,7 +266,7 @@ HTML_TEMPLATE = """
         </div>
     </div>
 
-    <div class="footer">Made by SkySense Team | v9.2</div>
+    <div class="footer">Made by SkySense Team | v10.0</div>
 </div>
 
 <script>
@@ -263,9 +281,20 @@ HTML_TEMPLATE = """
 
     document.getElementById('fileInput').addEventListener('change', async (e) => {
         const file = e.target.files[0];
+        const dateInput = document.getElementById('upload-date');
+        
+        if(!dateInput.value) {
+            alert("⚠️ Please select a date first!");
+            e.target.value = ''; // Reset file input
+            return;
+        }
+        
         if(!file) return;
         const txt = document.getElementById('upload-text'); txt.innerText = "Processing...";
-        const fd = new FormData(); fd.append('file', file);
+        const fd = new FormData(); 
+        fd.append('file', file);
+        fd.append('date', dateInput.value); // SEND DATE
+
         try {
             const res = await fetch('/upload', { method: 'POST', body: fd });
             const d = await res.json();
@@ -283,6 +312,24 @@ HTML_TEMPLATE = """
         ['pm1','pm25','pm10','temp','hum'].forEach(k => {
             if(document.getElementById('val-'+k)) document.getElementById('val-'+k).innerText = data[k];
         });
+
+        // UPDATE HISTORY LIST
+        const hContainer = document.getElementById('history-list');
+        if(data.history && data.history.length > 0) {
+            hContainer.innerHTML = '';
+            data.history.forEach(h => {
+                hContainer.innerHTML += `
+                <div class="history-item">
+                    <div>
+                        <div class="history-date"><i class="fa-regular fa-calendar"></i> ${h.date}</div>
+                        <div class="history-details">${h.filename} | ${h.location}</div>
+                    </div>
+                    <div style="text-align:right;">
+                        <span style="font-weight:700; color:${h.aqi > 100 ? '#ef4444' : '#22c55e'}">AQI ${h.aqi}</span>
+                    </div>
+                </div>`;
+            });
+        }
 
         const qContainer = document.getElementById('quick-risks'); qContainer.innerHTML = '';
         data.health_risks.forEach(r => qContainer.innerHTML += `
@@ -346,13 +393,18 @@ HTML_TEMPLATE = """
 def home(): return render_template_string(HTML_TEMPLATE)
 
 @app.route('/api/data')
-def get_data(): return jsonify(current_data)
+def get_data(): 
+    # Return history along with data
+    current_data['history'] = history_log
+    return jsonify(current_data)
 
 @app.route('/upload', methods=['POST'])
 def upload_file():
     global current_data
     if 'file' not in request.files: return jsonify({"error": "No file"}), 400
     file = request.files['file']
+    user_date = request.form.get('date', datetime.now().strftime('%Y-%m-%d')) # GET DATE
+
     try:
         if file.filename.endswith('.csv'): df = pd.read_csv(file)
         elif file.filename.endswith(('.xlsx', '.xls')): df = pd.read_excel(file)
@@ -380,13 +432,25 @@ def upload_file():
                 "city": get_city_name(r['lat'], r['lon']) if i % 5 == 0 else loc_name
             })
 
+        # --- SAVE TO HISTORY ---
+        history_entry = {
+            "date": user_date,
+            "filename": file.filename,
+            "location": loc_name,
+            "aqi": aqi
+        }
+        history_log.append(history_entry)
+        # Sort history: Latest date first
+        history_log.sort(key=lambda x: x['date'], reverse=True)
+
         current_data.update({
             "aqi": aqi, **val, "status": "Updated",
             "location_name": loc_name,
             "health_risks": calculate_advanced_health(val),
             "chart_data": {"aqi": aqi_list, "gps": gps_list},
             "last_updated": datetime.now().strftime("%H:%M:%S"),
-            "connection_status": "Connected"
+            "connection_status": "Connected",
+            "history": history_log # Send updated history back
         })
         return jsonify({"message": "Success", "data": current_data})
     except Exception as e: return jsonify({"error": str(e)}), 500
