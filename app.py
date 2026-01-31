@@ -8,7 +8,7 @@ from datetime import datetime
 # Geopy for City Names
 try:
     from geopy.geocoders import Nominatim
-    geolocator = Nominatim(user_agent="skysense_app_v5")
+    geolocator = Nominatim(user_agent="skysense_app_v_final")
 except ImportError:
     geolocator = None
 
@@ -28,7 +28,7 @@ current_data = {
 
 # --- SMART COLUMN FINDER ---
 def normalize_columns(df):
-    """Finds lat/lon columns regardless of exact name."""
+    """Finds lat/lon/pm25 columns regardless of exact name."""
     col_map = {}
     for col in df.columns:
         c_lower = col.lower().strip()
@@ -38,7 +38,7 @@ def normalize_columns(df):
         elif 'no2' in c_lower: col_map[col] = 'no2'
         elif 'so2' in c_lower: col_map[col] = 'so2'
         elif 'co' in c_lower and 'count' not in c_lower: col_map[col] = 'co'
-        # Map GPS variations
+        # Map GPS variations (Crucial Fix)
         elif 'lat' in c_lower: col_map[col] = 'lat'
         elif 'lon' in c_lower or 'lng' in c_lower: col_map[col] = 'lon'
     
@@ -267,7 +267,7 @@ HTML_TEMPLATE = """
         </div>
     </div>
 
-    <div class="footer">Made by SkySense Team | v5.0 Gold</div>
+    <div class="footer">Made by SkySense Team | v5.1</div>
 </div>
 
 <script>
@@ -378,51 +378,3 @@ HTML_TEMPLATE = """
 </script>
 </body>
 </html>
-"""
-
-# --- BACKEND ROUTES ---
-
-@app.route('/')
-def home(): return render_template_string(HTML_TEMPLATE)
-
-@app.route('/api/data')
-def get_data(): return jsonify(current_data)
-
-# ROUTE 1: UPLOAD (With Smart Column Mapping)
-@app.route('/upload', methods=['POST'])
-def upload_file():
-    global current_data
-    if 'file' not in request.files: return jsonify({"error": "No file"}), 400
-    file = request.files['file']
-    try:
-        if file.filename.endswith('.csv'): df = pd.read_csv(file)
-        elif file.filename.endswith(('.xlsx', '.xls')): df = pd.read_excel(file)
-        else: return jsonify({"error": "Invalid file"}), 400
-
-        # SMART COLUMN MAPPER
-        df = normalize_columns(df)
-        
-        # Ensure columns exist
-        for c in ['pm25','pm10','no2','so2','co']: 
-            if c not in df.columns: df[c] = 0
-        if 'lat' not in df.columns: df['lat'] = 0.0
-        if 'lon' not in df.columns: df['lon'] = 0.0
-
-        val = {k: round(df[k].mean(), 1) for k in ['pm25','pm10','no2','so2','co']}
-        aqi = int((val['pm25']*2) + (val['pm10']*0.5))
-        
-        # Get City Name from first valid GPS point
-        valid_gps = df[(df['lat'] != 0) & (df['lon'] != 0)]
-        if not valid_gps.empty:
-            loc_name = get_city_name(valid_gps.iloc[0]['lat'], valid_gps.iloc[0]['lon'])
-        else:
-            loc_name = "GPS Not Found in File"
-
-        # Chart Data
-        c_data = {k: df[k].head(50).tolist() for k in val.keys()}
-        gps_list = []
-        for i, r in df.head(50).iterrows():
-            gps_list.append({
-                "lat": r['lat'], 
-                "lon": r['lon'],
-                "city": get_city_name(r['lat'], r['lon']) if i % 5 == 0 else loc_name
