@@ -5,10 +5,10 @@ import re
 import random
 from datetime import datetime
 
-# --- GEOLOCATOR SETUP ---
+# Geopy for City Names
 try:
     from geopy.geocoders import Nominatim
-    geolocator = Nominatim(user_agent="skysense_final_v6")
+    geolocator = Nominatim(user_agent="skysense_final_v8")
 except ImportError:
     geolocator = None
 
@@ -16,28 +16,39 @@ app = Flask(__name__)
 
 # --- GLOBAL DATA STORE ---
 current_data = {
-    "aqi": 0, "pm25": 0, "pm10": 0, "no2": 0, "so2": 0, "co": 0,
+    "aqi": 0, 
+    "pm1": 0, "pm25": 0, "pm10": 0, 
+    "temp": 0, "hum": 0, "press": 0, "gas": 0, "alt": 0,
+    "lat": 0, "lon": 0,
     "status": "Waiting...",
-    "location_name": "Waiting for GPS...",
+    "location_name": "Waiting for Data...",
     "health_risks": [],
-    "chart_data": {"pm25":[], "pm10":[], "gps":[]},
-    "esp32_log": ["> System Initialized...", "> Waiting for Drone Handshake..."],
+    "chart_data": {"pm25":[], "temp":[], "hum":[], "gps":[]},
+    "esp32_log": ["> System Initialized...", "> Waiting for Data stream..."],
     "last_updated": "Never",
     "connection_status": "Listening"
 }
 
-# --- SMART COLUMN FIXER ---
+# --- SMART COLUMN FIXER (ALL 10 PARAMS) ---
 def normalize_columns(df):
     col_map = {}
     for col in df.columns:
         c_lower = col.lower().strip()
-        if 'pm2.5' in c_lower or 'pm25' in c_lower: col_map[col] = 'pm25'
+        # 1. PM Metrics
+        if 'pm1.0' in c_lower or 'pm1' in c_lower and 'pm10' not in c_lower: col_map[col] = 'pm1'
+        elif 'pm2.5' in c_lower or 'pm25' in c_lower: col_map[col] = 'pm25'
         elif 'pm10' in c_lower: col_map[col] = 'pm10'
-        elif 'no2' in c_lower: col_map[col] = 'no2'
-        elif 'so2' in c_lower: col_map[col] = 'so2'
-        elif 'co' in c_lower and 'count' not in c_lower: col_map[col] = 'co'
+        # 2. Environmental
+        elif 'temp' in c_lower: col_map[col] = 'temp'
+        elif 'hum' in c_lower: col_map[col] = 'hum'
+        elif 'press' in c_lower: col_map[col] = 'press'
+        elif 'gas' in c_lower or 'res' in c_lower: col_map[col] = 'gas'
+        # 3. Location
+        elif 'alt' in c_lower: col_map[col] = 'alt'
         elif 'lat' in c_lower: col_map[col] = 'lat'
         elif 'lon' in c_lower or 'lng' in c_lower: col_map[col] = 'lon'
+        # 4. Time
+        elif 'date' in c_lower or 'time' in c_lower: col_map[col] = 'timestamp'
     return df.rename(columns=col_map)
 
 # --- CITY NAME HELPER ---
@@ -47,7 +58,7 @@ def get_city_name(lat, lon):
         location = geolocator.reverse(f"{lat}, {lon}", exactly_one=True, language='en')
         if location:
             add = location.raw.get('address', {})
-            return add.get('suburb') or add.get('city') or add.get('town') or add.get('county') or "Unknown Area"
+            return add.get('suburb') or add.get('city') or add.get('town') or "Unknown Area"
     except:
         return "Unknown Area"
     return "Unknown Area"
@@ -55,27 +66,35 @@ def get_city_name(lat, lon):
 # --- HEALTH ENGINE ---
 def calculate_advanced_health(val):
     risks = []
-    # Asthma
-    asthma_prob = min(100, int((val['pm25'] / 35) * 20 + (val['pm10'] / 50) * 10))
-    risks.append({
-        "name": "Asthma & Allergies",
-        "prob": asthma_prob,
-        "level": "High" if asthma_prob > 50 else "Moderate" if asthma_prob > 20 else "Low",
-        "symptoms": ["Wheezing", "Coughing", "Runny nose", "Itchy eyes"],
-        "recs": ["Keep rescue inhaler handy", "Stay indoors during high pollution", "Use air purifier"]
-    })
-    # Cardiovascular
-    cardio_prob = min(100, int((val['pm25'] / 35) * 15 + (val['co'] / 4) * 20))
-    risks.append({
-        "name": "Cardiovascular Diseases",
-        "prob": cardio_prob,
-        "level": "High" if cardio_prob > 50 else "Moderate" if cardio_prob > 20 else "Low",
-        "symptoms": ["Chest pain", "Irregular heartbeat", "Fatigue", "Dizziness"],
-        "recs": ["Monitor blood pressure", "Avoid strenuous outdoor exercise", "Consult cardiologist"]
-    })
+    
+    # 1. Respiratory (PM Based)
+    pm_score = max(val['pm25'], val['pm10']*0.5)
+    if pm_score > 50:
+        risks.append({
+            "name": "Respiratory Stress", "prob": min(100, int(pm_score)), "level": "High" if pm_score > 100 else "Moderate",
+            "symptoms": ["Coughing", "Throat irritation", "Shortness of breath"],
+            "recs": ["Wear mask outdoors", "Use air purifier", "Close windows"]
+        })
+
+    # 2. Heat Stress (Temp + Humidity)
+    if val['temp'] > 35:
+        risks.append({
+            "name": "Heat Stress", "prob": 80, "level": "High",
+            "symptoms": ["Dehydration", "Fatigue", "Heat exhaustion"],
+            "recs": ["Hydrate frequently", "Avoid direct sun", "Seek shade"]
+        })
+        
+    # 3. Altitude Sickness (If High Alt)
+    if val['alt'] > 2500:
+        risks.append({
+            "name": "Altitude Hypoxia", "prob": 60, "level": "Moderate",
+            "symptoms": ["Dizziness", "Headache", "Shortness of breath"],
+            "recs": ["Limit physical exertion", "Monitor oxygen levels"]
+        })
+
     return risks
 
-# --- UI TEMPLATE (Fixed Syntax Error) ---
+# --- UI TEMPLATE ---
 HTML_TEMPLATE = """
 <!DOCTYPE html>
 <html lang="en">
@@ -95,36 +114,27 @@ HTML_TEMPLATE = """
         .logo { font-size: 1.5rem; font-weight: 700; color: #2563eb; display: flex; align-items: center; gap: 8px; }
         .refresh-btn { background: #111827; color: white; border: none; padding: 8px 16px; border-radius: 6px; cursor: pointer; }
         .alert-banner { background: #fffbeb; border: 1px solid #fcd34d; color: #92400e; padding: 20px; border-radius: 12px; margin-bottom: 25px; }
-        .alert-badge { background: #fcd34d; color: #78350f; font-size: 0.75rem; padding: 2px 8px; border-radius: 12px; font-weight: 600; }
-        .rec-list { list-style: none; margin-top: 10px; font-size: 0.9rem; line-height: 1.6; }
-        .rec-list li::before { content: "•"; color: #3b82f6; margin-right: 8px; }
-        .tabs { display: flex; gap: 5px; background: white; padding: 5px; border-radius: 12px; margin-bottom: 25px; box-shadow: 0 1px 3px rgba(0,0,0,0.05); overflow-x: auto; }
-        .tab-btn { flex: 1; min-width: 100px; border: none; background: transparent; padding: 12px; font-weight: 600; color: #6b7280; cursor: pointer; border-radius: 8px; transition: 0.2s; text-align: center; white-space: nowrap; }
-        .tab-btn:hover { background: #f9fafb; }
-        .tab-btn.active { background: #fff; color: #2563eb; box-shadow: 0 2px 4px rgba(0,0,0,0.05); border: 1px solid var(--border); }
+        .tabs { display: flex; gap: 5px; background: white; padding: 5px; border-radius: 12px; margin-bottom: 25px; overflow-x: auto; }
+        .tab-btn { flex: 1; min-width: 100px; border: none; background: transparent; padding: 12px; font-weight: 600; color: #6b7280; cursor: pointer; border-radius: 8px; transition: 0.2s; white-space: nowrap; }
+        .tab-btn.active { background: #fff; color: #2563eb; box-shadow: 0 2px 4px rgba(0,0,0,0.05); }
         .section { display: none; }
         .section.active { display: block; }
         .grid-2 { display: grid; grid-template-columns: 1fr 1fr; gap: 20px; }
         @media(max-width: 768px) { .grid-2 { grid-template-columns: 1fr; } }
         .card { background: var(--card); border-radius: 16px; padding: 25px; border: 1px solid var(--border); box-shadow: 0 1px 2px rgba(0,0,0,0.05); }
-        .card h3 { font-size: 1.1rem; margin-bottom: 20px; font-weight: 700; display:flex; align-items:center; gap:10px; }
         .aqi-num { font-size: 5rem; font-weight: 800; color: #ea580c; line-height: 1; text-align: center; margin-bottom: 10px; }
-        .pollutant-row { margin-bottom: 15px; }
-        .p-header { display: flex; justify-content: space-between; font-size: 0.9rem; font-weight: 600; margin-bottom: 5px; }
-        .p-bar-bg { background: #f3f4f6; height: 8px; border-radius: 10px; overflow: hidden; }
-        .p-bar-fill { height: 100%; background: #111827; width: 0%; transition: width 1s; }
-        .stat-box { background: #eff6ff; padding: 15px; border-radius: 10px; text-align: center; flex: 1; }
-        .stat-val { font-size: 1.5rem; font-weight: 700; color: #2563eb; }
-        .risk-row { display: flex; justify-content: space-between; padding: 12px 0; border-bottom: 1px solid var(--border); font-size: 0.95rem; }
-        .esp-dark-card { background: #111827; color: white; border-radius: 16px; padding: 25px; height: 100%; border: 1px solid #374151; }
-        .esp-dark-card h3 { color: white; display: flex; gap: 10px; align-items: center; margin-bottom: 20px; }
-        .console-dark { background: #1f2937; color: #4ade80; padding: 20px; border-radius: 8px; font-family: monospace; height: 200px; overflow-y: auto; font-size: 0.9rem; border: 1px solid #374151; }
-        .param-row { display: flex; margin-bottom: 10px; font-size: 0.95rem; }
-        .param-label { width: 100px; font-weight: 600; color: #9ca3af; }
-        .param-val { color: white; }
-        .status-dot { height: 10px; width: 10px; background-color: #4ade80; border-radius: 50%; display: inline-block; margin-right: 5px; }
-        .upload-zone { border: 2px dashed #d1d5db; padding: 50px; text-align: center; border-radius: 12px; cursor: pointer; background: #f9fafb; transition: 0.2s; }
-        .upload-zone:hover { border-color: #3b82f6; background: #eff6ff; }
+        
+        /* METRICS GRID */
+        .metric-grid { display: grid; grid-template-columns: repeat(3, 1fr); gap: 15px; margin-top: 20px; }
+        .metric-box { background: #f3f4f6; padding: 10px; border-radius: 8px; text-align: center; }
+        .metric-val { font-weight: 700; color: #111827; font-size: 1.1rem; }
+        .metric-label { font-size: 0.75rem; color: #6b7280; margin-top: 2px; }
+
+        /* ESP32 DARK */
+        .esp-dark-card { background: #111827; color: white; border-radius: 16px; padding: 25px; height: 100%; }
+        .console-dark { background: #1f2937; color: #4ade80; padding: 20px; border-radius: 8px; font-family: monospace; height: 200px; overflow-y: auto; }
+        
+        .upload-zone { border: 2px dashed #d1d5db; padding: 40px; text-align: center; border-radius: 12px; cursor: pointer; background: #f9fafb; }
         .btn-black { background: #111827; color: white; border: none; padding: 12px 20px; border-radius: 8px; width: 100%; font-weight: 600; cursor: pointer; text-decoration: none; display: inline-block; text-align: center; }
         .footer { text-align: center; margin-top: 40px; font-size: 0.8rem; color: #9ca3af; }
     </style>
@@ -138,18 +148,14 @@ HTML_TEMPLATE = """
     </div>
 
     <div class="alert-banner">
-        <div style="font-weight:700; margin-bottom:10px; display:flex; align-items:center; gap:10px;">
-            <i class="fa-solid fa-circle-info"></i> Health Alert <span class="alert-badge" id="aqi-badge">AQI --</span>
-        </div>
-        <div id="alert-msg" style="margin-bottom:10px;">Air quality analysis pending...</div>
-        <div style="font-weight:600; font-size:0.9rem;">Recommended Actions:</div>
-        <ul class="rec-list" id="main-recs"></ul>
+        <div style="font-weight:700; margin-bottom:10px;"><i class="fa-solid fa-circle-info"></i> Health Alert <span style="background:#fcd34d; padding:2px 8px; border-radius:12px; font-size:0.8rem;">AQI <span id="aqi-badge">--</span></span></div>
+        <div id="alert-msg">Waiting for data...</div>
     </div>
 
     <div class="tabs">
         <button class="tab-btn active" onclick="switchTab('overview')">Overview</button>
         <button class="tab-btn" onclick="switchTab('charts')">GPS Charts</button>
-        <button class="tab-btn" onclick="switchTab('trends')">Historical Trends</button>
+        <button class="tab-btn" onclick="switchTab('trends')">History Trends</button>
         <button class="tab-btn" onclick="switchTab('disease')">Disease Reports</button>
         <button class="tab-btn" onclick="switchTab('esp32')">ESP32</button>
         <button class="tab-btn" onclick="switchTab('upload')">Upload</button>
@@ -159,48 +165,48 @@ HTML_TEMPLATE = """
     <div id="overview" class="section active">
         <div class="grid-2">
             <div class="card">
-                <h3>Air Quality Index</h3>
+                <h3>Real-Time Air Quality</h3>
                 <div class="aqi-num" id="aqi-val">--</div>
-                <div style="text-align:center; color:#6b7280; font-size:0.9rem; margin-bottom:15px;">
-                    <i class="fa-solid fa-location-dot"></i> <span id="location-name">Unknown Location</span>
+                <div style="text-align:center; color:#6b7280; font-size:0.9rem;">
+                    <i class="fa-solid fa-location-dot"></i> <span id="location-name">Unknown</span>
                 </div>
-                <h3>Pollutant Levels</h3>
-                <div id="pollutant-bars"></div>
+                <div class="metric-grid">
+                    <div class="metric-box"><div class="metric-val" id="val-pm1">--</div><div class="metric-label">PM 1.0</div></div>
+                    <div class="metric-box"><div class="metric-val" id="val-pm25">--</div><div class="metric-label">PM 2.5</div></div>
+                    <div class="metric-box"><div class="metric-val" id="val-pm10">--</div><div class="metric-label">PM 10</div></div>
+                    <div class="metric-box"><div class="metric-val" id="val-temp">--°C</div><div class="metric-label">Temp</div></div>
+                    <div class="metric-box"><div class="metric-val" id="val-hum">--%</div><div class="metric-label">Humidity</div></div>
+                    <div class="metric-box"><div class="metric-val" id="val-press">--</div><div class="metric-label">Pressure</div></div>
+                    <div class="metric-box"><div class="metric-val" id="val-gas">--</div><div class="metric-label">Gas Res</div></div>
+                    <div class="metric-box"><div class="metric-val" id="val-alt">-- m</div><div class="metric-label">Altitude</div></div>
+                    <div class="metric-box"><div class="metric-val" id="val-latlon">--</div><div class="metric-label">GPS</div></div>
+                </div>
             </div>
             <div class="card">
-                <h3>Quick Health Summary</h3>
-                <div style="display:flex; gap:15px; margin-bottom:25px;">
-                    <div class="stat-box"><div class="stat-val" id="aqi-score-box">--</div><div style="font-size:0.8rem;">AQI Score</div></div>
-                    <div class="stat-box" style="background:#fff7ed;"><div class="stat-val" style="color:#ea580c;" id="risk-count">--</div><div style="font-size:0.8rem;">Risk Factors</div></div>
-                </div>
-                <h3>Top Health Concerns:</h3>
-                <div id="quick-risks"></div>
+                <h3>Health Risk Analysis</h3>
+                <div id="quick-risks" style="margin-top:20px;"></div>
             </div>
         </div>
     </div>
 
     <div id="charts" class="section">
         <div class="card">
-            <h3>Pollutant Levels vs Location</h3>
-            <p style="color:#6b7280; font-size:0.9rem; margin-bottom:15px;">Hover over bars to see Area/City Names</p>
+            <h3>Pollutant Levels vs GPS Coordinates</h3>
+            <p style="color:#6b7280; font-size:0.9rem; margin-bottom:15px;">Combined view of PM2.5 and Temperature along flight path</p>
             <div style="height:400px;"><canvas id="mainChart"></canvas></div>
         </div>
     </div>
 
     <div id="trends" class="section">
         <div class="card">
-            <h3><i class="fa-solid fa-chart-line"></i> Historical Trend Analysis</h3>
-            <label class="upload-zone" style="padding: 20px; margin-bottom: 20px;">
-                <i class="fa-solid fa-calendar-days" style="font-size: 1.5rem; color: #9ca3af; margin-bottom:10px;"></i>
-                <div style="font-weight:600;">Upload Historical CSV</div>
-                <input type="file" id="historyInput" style="display:none;">
-            </label>
+            <h3>Historical Data Trends</h3>
+            <p style="color:#6b7280;">Upload CSV containing "Date" or "Time" column to view trends.</p>
             <div style="height:400px;"><canvas id="trendChart"></canvas></div>
         </div>
     </div>
 
     <div id="disease" class="section">
-        <div class="card" style="border:none; box-shadow:none; background:transparent; padding:0;">
+        <div class="card" style="border:none; box-shadow:none; padding:0;">
             <div id="disease-container"></div>
         </div>
     </div>
@@ -208,35 +214,30 @@ HTML_TEMPLATE = """
     <div id="esp32" class="section">
         <div class="grid-2">
             <div class="esp-dark-card">
-                <h3><i class="fa-solid fa-satellite-dish"></i> Connection Status</h3>
-                <div style="margin-top:20px;">
-                    <div class="param-row"><span class="param-label">Protocol:</span><span class="param-val">HTTP / JSON</span></div>
-                    <div class="param-row"><span class="param-label">Endpoint:</span><span class="param-val" style="background:#374151; padding:2px 6px; border-radius:4px;">/api/upload_sensor</span></div>
-                    <div class="param-row"><span class="param-label">Status:</span><span class="param-val" style="color:#4ade80;"><span class="status-dot"></span>Listening</span></div>
-                </div>
-                <div style="margin-top:40px; border-top:1px solid #374151; padding-top:20px;">
-                    <p style="color:#9ca3af; font-size:0.8rem; margin-bottom:10px;">Quick Setup:</p>
-                    <code style="background:#1f2937; color:#d1d5db; display:block; padding:10px; border-radius:6px; font-size:0.8rem;">
-                        WiFi.begin("SSID", "PASS");<br>
-                        http.begin(".../api/upload_sensor");
+                <h3><i class="fa-solid fa-satellite-dish"></i> Status</h3>
+                <div style="margin-top:20px; font-size:0.9rem;">
+                    <p><strong>Endpoint:</strong> <code style="background:#374151; padding:2px 6px;">/api/upload_sensor</code></p>
+                    <p><strong>Status:</strong> <span style="color:#4ade80;">● Listening</span></p>
+                    <p style="margin-top:20px; color:#9ca3af;">Supported JSON Keys:</p>
+                    <code style="background:#1f2937; display:block; padding:10px; color:#d1d5db; font-size:0.8rem;">
+                        temp, hum, press, gas, pm1, pm25, pm10, alt, lat, lon
                     </code>
                 </div>
             </div>
             <div class="esp-dark-card">
                 <h3><i class="fa-solid fa-rocket"></i> Live Telemetry</h3>
-                <div class="console-dark" id="esp-console">
-                    > System Initialized...
-                </div>
+                <div class="console-dark" id="esp-console"></div>
             </div>
         </div>
     </div>
 
     <div id="upload" class="section">
         <div class="card">
-            <h3><i class="fa-solid fa-file-arrow-up"></i> File Upload</h3>
+            <h3>Upload Data File</h3>
+            <p style="color:#6b7280; margin-bottom:15px;">Supports CSV/Excel with columns: Temp, Hum, Press, Gas, PM1, PM2.5, PM10, Alt, Lat, Lon, Date</p>
             <label class="upload-zone">
-                <i class="fa-solid fa-cloud-arrow-up" style="font-size: 2.5rem; color: #9ca3af; margin-bottom:15px;"></i>
-                <div id="upload-text" style="font-weight:600;">Click to Browse Files</div>
+                <i class="fa-solid fa-cloud-arrow-up" style="font-size: 2rem; color: #9ca3af;"></i>
+                <div id="upload-text" style="font-weight:600; margin-top:10px;">Click to Browse</div>
                 <input type="file" id="fileInput" style="display:none;">
             </label>
         </div>
@@ -244,16 +245,12 @@ HTML_TEMPLATE = """
 
     <div id="export" class="section">
         <div class="card">
-            <h3><i class="fa-solid fa-file-export"></i> Export Report</h3>
-            <div style="background:#f9fafb; padding:20px; border-radius:12px; border:1px solid #e5e7eb; margin-bottom:20px;">
-                <div style="display:flex; justify-content:space-between; margin-bottom:10px;"><span>Report Date</span><strong><script>document.write(new Date().toLocaleDateString())</script></strong></div>
-                <div style="display:flex; justify-content:space-between;"><span>AQI Score</span><strong id="rep-aqi">--</strong></div>
-            </div>
+            <h3>Export Report</h3>
             <a href="/export" class="btn-black">Download Full Report</a>
         </div>
     </div>
 
-    <div class="footer">Made by SkySense Team | v6.0 Final</div>
+    <div class="footer">Made by SkySense Team | v8.0</div>
 </div>
 
 <script>
@@ -266,7 +263,7 @@ HTML_TEMPLATE = """
 
     setInterval(() => { fetch('/api/data').then(res => res.json()).then(data => updateUI(data)); }, 3000);
 
-    // UPLOAD
+    // MAIN UPLOAD
     document.getElementById('fileInput').addEventListener('change', async (e) => {
         const file = e.target.files[0];
         if(!file) return;
@@ -276,90 +273,80 @@ HTML_TEMPLATE = """
             const res = await fetch('/upload', { method: 'POST', body: fd });
             const d = await res.json();
             if(d.error) alert(d.error);
-            else { txt.innerText = "Success!"; updateUI(d.data); setTimeout(()=>switchTab('overview'), 500); }
+            else { 
+                txt.innerText = "Success!"; 
+                updateUI(d.data); 
+                // Render Trend Chart if labels exist
+                if(d.data.trend_labels && d.data.trend_labels.length > 0) {
+                    renderTrendChart(d.data.trend_labels, d.data.trend_values);
+                }
+                setTimeout(()=>switchTab('overview'), 500); 
+            }
         } catch(e) { alert(e); }
     });
 
-    // HISTORICAL UPLOAD
     let trendChart = null;
-    document.getElementById('historyInput').addEventListener('change', async (e) => {
-        const file = e.target.files[0];
-        if(!file) return;
-        const fd = new FormData(); fd.append('file', file);
-        try {
-            const res = await fetch('/upload_history', { method: 'POST', body: fd });
-            const d = await res.json();
-            if(d.error) alert(d.error);
-            else { renderTrendChart(d.labels, d.values); }
-        } catch(e) { alert("Error: " + e); }
-    });
-
     function renderTrendChart(labels, values) {
         const ctx = document.getElementById('trendChart').getContext('2d');
         if(trendChart) trendChart.destroy();
         trendChart = new Chart(ctx, {
             type: 'line',
-            data: { labels: labels, datasets: [{ label: 'Historical AQI', data: values, borderColor: '#3b82f6', fill: true, tension: 0.4 }] },
+            data: { labels: labels, datasets: [{ label: 'PM2.5 Trend', data: values, borderColor: '#3b82f6', fill: true, tension: 0.4 }] },
             options: { responsive: true, maintainAspectRatio: false }
         });
     }
 
     let mainChart = null;
     function updateUI(data) {
-        // OVERVIEW
         document.getElementById('aqi-val').innerText = data.aqi;
-        document.getElementById('aqi-badge').innerText = `AQI ${data.aqi}`;
-        document.getElementById('aqi-score-box').innerText = data.aqi;
-        document.getElementById('risk-count').innerText = data.health_risks.length;
+        document.getElementById('aqi-badge').innerText = data.aqi;
         document.getElementById('location-name').innerText = data.location_name;
-        document.getElementById('alert-msg').innerText = data.aqi > 100 ? "Unhealthy conditions detected." : "Air quality is acceptable.";
+        document.getElementById('alert-msg').innerText = data.aqi > 100 ? "Unhealthy Air Quality" : "Good Air Quality";
 
-        const pContainer = document.getElementById('pollutant-bars'); pContainer.innerHTML = '';
-        ['pm25','pm10','no2','so2','co'].forEach(k => {
-            const pct = Math.min((data[k]/(k==='co'?10:150))*100, 100);
-            pContainer.innerHTML += `<div class="pollutant-row"><div class="p-header"><span>${k.toUpperCase()}</span><span>${data[k]}</span></div><div class="p-bar-bg"><div class="p-bar-fill" style="width:${pct}%"></div></div></div>`;
+        ['pm1','pm25','pm10','temp','hum','press','gas','alt'].forEach(k => {
+            if(document.getElementById('val-'+k)) document.getElementById('val-'+k).innerText = data[k];
         });
+        document.getElementById('val-latlon').innerText = `${data.lat}, ${data.lon}`;
 
         const qContainer = document.getElementById('quick-risks'); qContainer.innerHTML = '';
-        data.health_risks.forEach(r => qContainer.innerHTML += `<div class="risk-row"><span>${r.name}</span><strong>${r.prob}%</strong></div>`);
-        const recList = document.getElementById('main-recs'); recList.innerHTML = '';
-        if(data.health_risks.length > 0) data.health_risks[0].recs.forEach(r => recList.innerHTML += `<li>${r}</li>`);
-        else recList.innerHTML = "<li>Safe for outdoor activities.</li>";
+        data.health_risks.forEach(r => qContainer.innerHTML += `<div style="display:flex; justify-content:space-between; padding:10px 0; border-bottom:1px solid #eee;"><span>${r.name}</span><strong>${r.prob}%</strong></div>`);
 
-        // CHARTS
+        // CHART
         if(data.chart_data.pm25.length > 0) {
             const ctx = document.getElementById('mainChart').getContext('2d');
-            const colors = data.chart_data.pm25.map(val => val > 100 ? '#ef4444' : val > 50 ? '#eab308' : '#22c55e');
-            const labels = data.chart_data.gps.map(g => `${Number(g.lat).toFixed(4)}, ${Number(g.lon).toFixed(4)}`);
+            const labels = data.chart_data.gps.map(g => `${Number(g.lat).toFixed(4)},${Number(g.lon).toFixed(4)}`);
             const cities = data.chart_data.gps.map(g => g.city || "Unknown");
 
             if(mainChart) mainChart.destroy();
             mainChart = new Chart(ctx, {
                 type: 'bar',
-                data: { labels: labels, datasets: [{ label: 'PM2.5 Level', data: data.chart_data.pm25, backgroundColor: colors, borderRadius: 4 }] },
+                data: {
+                    labels: labels,
+                    datasets: [
+                        { label: 'PM2.5', data: data.chart_data.pm25, backgroundColor: '#3b82f6', order: 2 },
+                        { label: 'Temp', data: data.chart_data.temp, borderColor: '#ef4444', type: 'line', fill: false, order: 1 }
+                    ]
+                },
                 options: { 
                     responsive: true, maintainAspectRatio: false,
-                    plugins: { tooltip: { callbacks: { label: function(c) { return `PM2.5: ${c.raw} | Area: ${cities[c.dataIndex]}`; } } } },
+                    plugins: { tooltip: { callbacks: { label: function(c) { return `${c.dataset.label}: ${c.raw} | ${cities[c.dataIndex]}`; } } } },
                     scales: { x: { title: {display:true, text:'GPS Coordinates'}, ticks: {maxRotation: 45, minRotation: 45} } }
                 }
             });
         }
-
+        
         // DISEASE
         const dContainer = document.getElementById('disease-container'); dContainer.innerHTML = '';
         data.health_risks.forEach(r => {
             dContainer.innerHTML += `
             <div style="background:white; border:1px solid #e5e7eb; border-radius:12px; padding:20px; margin-bottom:20px; border-left:5px solid ${r.level==='High'?'#ef4444':'#3b82f6'};">
-                <div style="display:flex; justify-content:space-between;"><h3>${r.name}</h3><span>${r.level}</span></div>
-                <div style="font-size:0.9rem; color:#6b7280; margin-bottom:5px;">Risk: <strong>${r.prob}%</strong></div>
-                <div style="height:6px; background:#f3f4f6; border-radius:4px; margin-bottom:15px;"><div style="height:100%; width:${r.prob}%; background:${r.level==='High'?'#ef4444':'#3b82f6'}; border-radius:4px;"></div></div>
-                <ul style="font-size:0.9rem; color:#4b5563; padding-left:20px;">${r.recs.map(rec => `<li>${rec}</li>`).join('')}</ul>
+                <h3>${r.name} <span style="font-size:0.8rem; background:#f3f4f6; padding:2px 8px; border-radius:10px;">${r.level}</span></h3>
+                <p>Symptoms: ${r.symptoms.join(', ')}</p>
+                <ul style="padding-left:20px; margin-top:5px; color:#4b5563;">${r.recs.map(rec => `<li>${rec}</li>`).join('')}</ul>
             </div>`;
         });
 
-        // ESP32 LOGS
         document.getElementById('esp-console').innerHTML = data.esp32_log.join('<br>');
-        document.getElementById('rep-aqi').innerText = data.aqi;
     }
 </script>
 </body>
@@ -385,49 +372,49 @@ def upload_file():
         else: return jsonify({"error": "Invalid file"}), 400
 
         df = normalize_columns(df)
-        for c in ['pm25','pm10','no2','so2','co']: 
+        
+        # Fill missing
+        all_cols = ['pm1','pm25','pm10','temp','hum','press','gas','alt','lat','lon']
+        for c in all_cols: 
             if c not in df.columns: df[c] = 0
-        if 'lat' not in df.columns: df['lat'] = 0.0
-        if 'lon' not in df.columns: df['lon'] = 0.0
 
-        val = {k: round(df[k].mean(), 1) for k in ['pm25','pm10','no2','so2','co']}
+        # Calculate Averages
+        val = {k: round(df[k].mean(), 1) for k in all_cols}
         aqi = int((val['pm25']*2) + (val['pm10']*0.5))
         
+        # Location
         valid_gps = df[(df['lat'] != 0) & (df['lon'] != 0)]
-        loc_name = get_city_name(valid_gps.iloc[0]['lat'], valid_gps.iloc[0]['lon']) if not valid_gps.empty else "GPS Not Found"
+        loc_name = get_city_name(valid_gps.iloc[0]['lat'], valid_gps.iloc[0]['lon']) if not valid_gps.empty else "No GPS Data"
 
-        c_data = {k: df[k].head(50).tolist() for k in val.keys()}
+        # Chart Arrays
+        c_data = {k: df[k].head(50).tolist() for k in ['pm25','temp','hum']}
         gps_list = []
         for i, r in df.head(50).iterrows():
             gps_list.append({
-                "lat": r['lat'], 
-                "lon": r['lon'],
-                "city": get_city_name(r['lat'], r['lon']) if i % 5 == 0 else loc_name 
+                "lat": r['lat'], "lon": r['lon'],
+                "city": get_city_name(r['lat'], r['lon']) if i % 5 == 0 else loc_name
             })
         c_data['gps'] = gps_list
+        
+        # Trend Data (If timestamp exists)
+        trend_labels = []
+        trend_values = []
+        if 'timestamp' in df.columns:
+            df = df.sort_values(by='timestamp')
+            trend_labels = df['timestamp'].astype(str).tolist()
+            trend_values = df['pm25'].tolist()
 
         current_data.update({
             "aqi": aqi, **val, "status": "Updated",
             "location_name": loc_name,
             "health_risks": calculate_advanced_health(val),
             "chart_data": c_data,
+            "trend_labels": trend_labels, # Pass for history
+            "trend_values": trend_values,
             "last_updated": datetime.now().strftime("%H:%M:%S"),
             "connection_status": "Connected"
         })
         return jsonify({"message": "Success", "data": current_data})
-    except Exception as e: return jsonify({"error": str(e)}), 500
-
-@app.route('/upload_history', methods=['POST'])
-def upload_history():
-    if 'file' not in request.files: return jsonify({"error": "No file"}), 400
-    file = request.files['file']
-    try:
-        df = pd.read_csv(file)
-        date_col = next((c for c in df.columns if 'date' in c.lower()), None)
-        val_col = next((c for c in df.columns if 'aqi' in c.lower() or 'pm25' in c.lower()), None)
-        if not date_col: return jsonify({"error": "No Date column found"}), 400
-        df = df.sort_values(by=date_col)
-        return jsonify({"labels": df[date_col].astype(str).tolist(), "values": df[val_col].tolist()})
     except Exception as e: return jsonify({"error": str(e)}), 500
 
 @app.route('/api/upload_sensor', methods=['POST'])
@@ -436,12 +423,14 @@ def receive_sensor():
     try:
         data = request.json
         current_data.update(data)
-        current_data['aqi'] = int((data.get('pm25',0)*2) + (data.get('pm10',0)*0.5))
+        
+        aqi = int((data.get('pm25',0)*2) + (data.get('pm10',0)*0.5))
+        current_data['aqi'] = aqi
         current_data['health_risks'] = calculate_advanced_health(current_data)
-        current_data['last_updated'] = datetime.now().strftime("%H:%M:%S")
         current_data['location_name'] = get_city_name(data.get('lat',0), data.get('lon',0))
+        current_data['last_updated'] = datetime.now().strftime("%H:%M:%S")
 
-        for k in ['pm25','pm10','no2','so2','co']:
+        for k in ['pm25','temp','hum']:
             current_data['chart_data'][k].append(data.get(k, 0))
             if len(current_data['chart_data'][k]) > 50: current_data['chart_data'][k].pop(0)
         
@@ -451,7 +440,7 @@ def receive_sensor():
         })
         if len(current_data['chart_data']['gps']) > 50: current_data['chart_data']['gps'].pop(0)
 
-        current_data['esp32_log'].append(f"> [REC] AQI: {current_data['aqi']} | Loc: {current_data['location_name']}")
+        current_data['esp32_log'].append(f"> [REC] T:{data.get('temp')} | PM25:{data.get('pm25')}")
         if len(current_data['esp32_log']) > 20: current_data['esp32_log'].pop(0)
         
         return jsonify({"status": "success"})
@@ -460,7 +449,9 @@ def receive_sensor():
 @app.route('/export')
 def export_report():
     output = io.StringIO()
-    output.write(f"Report Date,{datetime.now()}\nLocation,{current_data['location_name']}\nAQI,{current_data['aqi']}\n")
+    output.write(f"Report Date,{datetime.now()}\nLocation,{current_data['location_name']}\nAQI,{current_data['aqi']}\n\n")
+    for k in ['pm1','pm25','pm10','temp','hum','press','gas','alt']:
+        output.write(f"{k},{current_data.get(k,0)}\n")
     mem = io.BytesIO()
     mem.write(output.getvalue().encode('utf-8'))
     mem.seek(0)
