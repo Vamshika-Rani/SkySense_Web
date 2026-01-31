@@ -8,7 +8,7 @@ from datetime import datetime
 # Geopy for City Names
 try:
     from geopy.geocoders import Nominatim
-    geolocator = Nominatim(user_agent="skysense_final_v9_1")
+    geolocator = Nominatim(user_agent="skysense_final_v10")
 except ImportError:
     geolocator = None
 
@@ -28,7 +28,7 @@ current_data = {
     "connection_status": "Listening"
 }
 
-# --- SMART COLUMN FIXER (Includes "lalitude" fix) ---
+# --- SMART COLUMN FIXER ---
 def normalize_columns(df):
     col_map = {}
     for col in df.columns:
@@ -41,7 +41,7 @@ def normalize_columns(df):
         elif 'press' in c_lower: col_map[col] = 'press'
         elif 'gas' in c_lower: col_map[col] = 'gas'
         elif 'alt' in c_lower: col_map[col] = 'alt'
-        # Fix for 'lalitude' typo in your CSV
+        # Fix for typo 'lalitude'
         elif 'lat' in c_lower or 'lal' in c_lower: col_map[col] = 'lat'
         elif 'lon' in c_lower or 'lng' in c_lower: col_map[col] = 'lon'
     return df.rename(columns=col_map)
@@ -50,11 +50,10 @@ def normalize_columns(df):
 def get_city_name(lat, lon):
     if not geolocator or lat == 0: return "Unknown Area"
     try:
-        # Rounding speeds up caching/lookup slightly
         location = geolocator.reverse(f"{lat}, {lon}", exactly_one=True, language='en')
         if location:
             add = location.raw.get('address', {})
-            return add.get('suburb') or add.get('city') or add.get('town') or add.get('village') or "Unknown Area"
+            return add.get('suburb') or add.get('city') or add.get('town') or "Unknown Area"
     except:
         return "Unknown Area"
     return "Unknown Area"
@@ -131,7 +130,7 @@ HTML_TEMPLATE = """
         .alert-banner { background: #fffbeb; border: 1px solid #fcd34d; color: #92400e; padding: 20px; border-radius: 12px; margin-bottom: 25px; }
         
         .tabs { display: flex; gap: 5px; background: white; padding: 5px; border-radius: 12px; margin-bottom: 25px; overflow-x: auto; }
-        .tab-btn { flex: 1; border: none; background: transparent; padding: 12px; font-weight: 600; color: #6b7280; cursor: pointer; border-radius: 8px; transition: 0.2s; white-space: nowrap; }
+        .tab-btn { flex: 1; min-width: 100px; border: none; background: transparent; padding: 12px; font-weight: 600; color: #6b7280; cursor: pointer; border-radius: 8px; transition: 0.2s; white-space: nowrap; }
         .tab-btn.active { background: #fff; color: #2563eb; box-shadow: 0 2px 4px rgba(0,0,0,0.05); }
         .section { display: none; }
         .section.active { display: block; }
@@ -249,7 +248,7 @@ HTML_TEMPLATE = """
         </div>
     </div>
 
-    <div class="footer">Made by SkySense Team | v9.1</div>
+    <div class="footer">Made by SkySense Team | v9.2</div>
 </div>
 
 <script>
@@ -292,12 +291,9 @@ HTML_TEMPLATE = """
                 <span style="font-size:0.85rem; font-weight:700; color:${r.level==='High'?'#ef4444':'#f59e0b'}">${r.level} (${r.prob}%)</span>
             </div>`);
 
-        // CHART UPDATE: Shows AQI (Y) vs Lat, Lon (X)
         if(data.chart_data.aqi.length > 0) {
             const ctx = document.getElementById('mainChart').getContext('2d');
-            
-            // X-AXIS: Combined Lat, Lon String
-            const labels = data.chart_data.gps.map(g => `${Number(g.lat).toFixed(4)}, ${Number(g.lon).toFixed(4)}`);
+            const labels = data.chart_data.gps.map(g => `${Number(g.lat).toFixed(4)},${Number(g.lon).toFixed(4)}`);
             const cities = data.chart_data.gps.map(g => g.city || "Unknown");
             const colors = data.chart_data.aqi.map(v => v > 150 ? '#ef4444' : v > 100 ? '#f97316' : v > 50 ? '#eab308' : '#22c55e');
 
@@ -315,14 +311,9 @@ HTML_TEMPLATE = """
                 },
                 options: { 
                     responsive: true, maintainAspectRatio: false,
-                    plugins: { 
-                        tooltip: { callbacks: { label: function(c) { return `AQI: ${c.raw} | Area: ${cities[c.dataIndex]}`; } } } 
-                    },
+                    plugins: { tooltip: { callbacks: { label: function(c) { return `AQI: ${c.raw} | Area: ${cities[c.dataIndex]}`; } } } },
                     scales: { 
-                        x: { 
-                            title: {display:true, text:'GPS Coordinates (Latitude, Longitude)'}, 
-                            ticks: {maxRotation: 45, minRotation: 45} 
-                        },
+                        x: { title: {display:true, text:'GPS Coordinates (Latitude, Longitude)'}, ticks: {maxRotation: 45, minRotation: 45} },
                         y: { title: {display:true, text:'AQI Value'}, beginAtZero: true }
                     }
                 }
@@ -369,23 +360,18 @@ def upload_file():
 
         df = normalize_columns(df)
         
-        # Fill missing
         all_cols = ['pm1','pm25','pm10','temp','hum','press','gas','alt','lat','lon']
         for c in all_cols: 
             if c not in df.columns: df[c] = 0
 
-        # Calculate Averages
         val = {k: round(df[k].mean(), 1) for k in all_cols}
         aqi = int((val['pm25']*2) + (val['pm10']*0.5))
         
-        # Location
         valid_gps = df[(df['lat'] != 0) & (df['lon'] != 0)]
         loc_name = get_city_name(valid_gps.iloc[0]['lat'], valid_gps.iloc[0]['lon']) if not valid_gps.empty else "No GPS Data"
 
-        # Prepare Chart Data (AQI List + GPS List)
         gps_list = []
         aqi_list = []
-        # Sample every row or every 5th row depending on size
         for i, r in df.head(50).iterrows():
             row_aqi = int((r['pm25']*2) + (r['pm10']*0.5))
             aqi_list.append(row_aqi)
@@ -416,4 +402,33 @@ def receive_sensor():
         current_data['aqi'] = aqi
         current_data['health_risks'] = calculate_advanced_health(current_data)
         current_data['location_name'] = get_city_name(data.get('lat',0), data.get('lon',0))
-        current_data['
+        current_data['last_updated'] = datetime.now().strftime("%H:%M:%S")
+
+        current_data['chart_data']['aqi'].append(aqi)
+        if len(current_data['chart_data']['aqi']) > 50: current_data['chart_data']['aqi'].pop(0)
+        
+        current_data['chart_data']['gps'].append({
+            "lat": data.get('lat',0), "lon": data.get('lon',0),
+            "city": current_data['location_name']
+        })
+        if len(current_data['chart_data']['gps']) > 50: current_data['chart_data']['gps'].pop(0)
+
+        current_data['esp32_log'].append(f"> [REC] AQI:{aqi} | Loc:{current_data['location_name']}")
+        if len(current_data['esp32_log']) > 20: current_data['esp32_log'].pop(0)
+        
+        return jsonify({"status": "success"})
+    except Exception as e: return jsonify({"error": str(e)}), 400
+
+@app.route('/export')
+def export_report():
+    output = io.StringIO()
+    output.write(f"Report Date,{datetime.now()}\nLocation,{current_data['location_name']}\nAQI,{current_data['aqi']}\n\n")
+    for k in ['pm1','pm25','pm10','temp','hum','press','gas','alt']:
+        output.write(f"{k},{current_data.get(k,0)}\n")
+    mem = io.BytesIO()
+    mem.write(output.getvalue().encode('utf-8'))
+    mem.seek(0)
+    return send_file(mem, as_attachment=True, download_name="SkySense_Report.csv", mimetype="text/csv")
+
+if __name__ == '__main__':
+    app.run(debug=True)
