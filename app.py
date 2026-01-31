@@ -25,11 +25,9 @@ current_data = {
 # --- ROBUST FILE READER ---
 def read_file_safely(file):
     try:
-        # Try reading as CSV first (even if named .xlsx)
         file.seek(0)
         return pd.read_csv(file)
     except:
-        # If that fails, try as Excel
         file.seek(0)
         return pd.read_excel(file)
 
@@ -81,6 +79,7 @@ HTML_TEMPLATE = """
     <title>SkySense | Atoms Dark</title>
     <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800&display=swap" rel="stylesheet">
     <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.4.0/css/all.min.css">
+    <link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css" />
     <script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
     <style>
         :root { --bg: #0f172a; --card-bg: #1e293b; --text-main: #f1f5f9; --text-muted: #94a3b8; --primary: #3b82f6; --orange: #f59e0b; --danger: #ef4444; --success: #22c55e; --border: #334155; }
@@ -124,6 +123,7 @@ HTML_TEMPLATE = """
         .console { background: #0f172a; color: #4ade80; padding: 20px; border-radius: 12px; font-family: monospace; height: 200px; overflow-y: auto; font-size: 0.9rem; border: 1px solid var(--border); }
         .btn-main { background: var(--primary); color: white; text-decoration: none; padding: 12px 24px; border-radius: 8px; font-weight: 600; display: inline-block; text-align: center; border: none; cursor: pointer; }
         .footer { text-align: center; margin-top: 50px; color: var(--text-muted); font-size: 0.85rem; }
+        #map-container { height: 450px; width: 100%; border-radius: 12px; z-index: 1; }
     </style>
 </head>
 <body>
@@ -135,13 +135,13 @@ HTML_TEMPLATE = """
     </div>
 
     <div class="alert-banner">
-        <div class="alert-icon"><i class="fa-solid fa-triangle-exclamation"></i></div>
         <div><div style="font-weight:700;">System Status</div><div style="font-size:0.9rem; margin-top:2px;" id="alert-msg">Waiting for sensor data...</div></div>
     </div>
 
     <div class="nav-tabs">
         <button class="tab-btn active" onclick="sw('overview')">Overview</button>
         <button class="tab-btn" onclick="sw('charts')">GPS Charts</button>
+        <button class="tab-btn" onclick="sw('heatmap')">Heatmap</button>
         <button class="tab-btn" onclick="sw('history')">History</button>
         <button class="tab-btn" onclick="sw('esp32')">ESP32</button>
         <button class="tab-btn" onclick="sw('upload')">Upload</button>
@@ -173,8 +173,15 @@ HTML_TEMPLATE = """
 
     <div id="charts" class="section">
         <div class="card">
-            <div class="card-header"><div class="card-title">AQI vs Flight Path</div></div>
+            <div class="card-header"><div class="card-title">AQI vs Flight Path (Bar)</div></div>
             <div style="height:400px;"><canvas id="mainChart"></canvas></div>
+        </div>
+    </div>
+
+    <div id="heatmap" class="section">
+        <div class="card">
+            <div class="card-header"><div class="card-title">Pollution Heatmap</div></div>
+            <div id="map-container"></div>
         </div>
     </div>
 
@@ -213,13 +220,19 @@ HTML_TEMPLATE = """
     </div>
 </div>
 
+<script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/leaflet.heat/0.2.0/leaflet-heat.js"></script>
+
 <script>
     Chart.defaults.color = '#94a3b8'; Chart.defaults.borderColor = '#334155';
+    let map = null, heatLayer = null, mainChart = null;
+
     function sw(id) {
         document.querySelectorAll('.section').forEach(e => e.classList.remove('active'));
         document.getElementById(id).classList.add('active');
         document.querySelectorAll('.tab-btn').forEach(e => e.classList.remove('active'));
         document.querySelector(`button[onclick="sw('${id}')"]`).classList.add('active');
+        if(id === 'heatmap') setTimeout(initMap, 200);
     }
 
     document.getElementById('upload-date').valueAsDate = new Date();
@@ -240,7 +253,12 @@ HTML_TEMPLATE = """
         } catch(e) { alert("Upload Failed. Check file format."); }
     });
 
-    let mainChart = null;
+    function initMap() {
+        if (map) { map.invalidateSize(); return; }
+        map = L.map('map-container').setView([20.5937, 78.9629], 5);
+        L.tileLayer('https://{s}.basemaps.cartocdn.com/dark_all/{z}/{x}/{y}{r}.png', { attribution: '© OpenStreetMap, © CartoDB' }).addTo(map);
+    }
+
     function updateUI(data) {
         document.getElementById('aqi-val').innerText = data.aqi;
         document.getElementById('aqi-score').innerText = data.aqi;
@@ -266,12 +284,24 @@ HTML_TEMPLATE = """
             data.history.forEach(h => hContainer.innerHTML += `<div class="history-row"><div><div class="h-date">${h.date}</div><div class="h-sub">${h.filename}</div></div><div style="font-weight:700; color:${h.aqi>100?'#ef4444':'#22c55e'}">AQI ${h.aqi}</div></div>`);
         }
 
+        // CHART UPDATE
         if(data.chart_data.aqi.length > 0) {
             const ctx = document.getElementById('mainChart').getContext('2d');
             const labels = data.chart_data.gps.map(g => `${Number(g.lat).toFixed(3)}, ${Number(g.lon).toFixed(3)}`);
             if(mainChart) mainChart.destroy();
             mainChart = new Chart(ctx, { type: 'bar', data: { labels: labels, datasets: [{ label: 'AQI', data: data.chart_data.aqi, backgroundColor: '#3b82f6', borderRadius: 4 }] }, options: { responsive: true, maintainAspectRatio: false, scales: { x: { display: false } } } });
         }
+
+        // HEATMAP UPDATE
+        if(data.chart_data.gps.length > 0) {
+            if(!map) initMap();
+            const firstPt = data.chart_data.gps[0];
+            if(firstPt.lat != 0) map.setView([firstPt.lat, firstPt.lon], 13);
+            let heatPoints = data.chart_data.gps.map((pt, i) => [pt.lat, pt.lon, data.chart_data.aqi[i]/300]);
+            if(heatLayer) map.removeLayer(heatLayer);
+            heatLayer = L.heatLayer(heatPoints, {radius: 25, blur: 15, maxZoom: 17}).addTo(map);
+        }
+
         document.getElementById('esp-console').innerHTML = data.esp32_log.join('<br>');
     }
 </script>
