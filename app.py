@@ -6,7 +6,7 @@ import datetime
 # Safe Import for Geopy
 try:
     from geopy.geocoders import Nominatim
-    geolocator = Nominatim(user_agent="skysense_final_v101")
+    geolocator = Nominatim(user_agent="skysense_final_v105")
 except ImportError:
     geolocator = None
 
@@ -22,14 +22,30 @@ current_data = {
     "last_updated": "Never"
 }
 
-# --- ROBUST FILE READER ---
+# --- ROBUST FILE READER (Fixed) ---
 def read_file_safely(file):
+    # Reset file pointer to beginning
+    file.seek(0)
+    
+    # Attempt 1: Read as Excel (Standard)
+    try:
+        return pd.read_excel(file)
+    except Exception:
+        pass
+        
+    # Attempt 2: Read as CSV (Standard)
     try:
         file.seek(0)
         return pd.read_csv(file)
-    except:
+    except Exception:
+        pass
+
+    # Attempt 3: Read as Text/CSV with different encodings
+    try:
         file.seek(0)
-        return pd.read_excel(file)
+        return pd.read_csv(file, encoding='utf-8', sep=None, engine='python')
+    except Exception:
+        raise ValueError("File format not recognized. Please upload a valid .csv or .xlsx file.")
 
 def normalize_columns(df):
     col_map = {}
@@ -69,8 +85,8 @@ def calc_health(val):
     risks.sort(key=lambda x: x['prob'], reverse=True)
     return risks
 
-# --- HTML TEMPLATE ---
-HTML_TEMPLATE = """
+# --- HTML TEMPLATE PARTS (Split to prevent Syntax Error) ---
+HTML_HEAD = """
 <!DOCTYPE html>
 <html lang="en">
 <head>
@@ -126,8 +142,10 @@ HTML_TEMPLATE = """
         #map-container { height: 450px; width: 100%; border-radius: 12px; z-index: 1; }
     </style>
 </head>
-<body>
+"""
 
+HTML_BODY = """
+<body>
 <div class="container">
     <div class="header">
         <div class="logo"><i class="fa-solid fa-drone"></i> SkySense</div>
@@ -248,9 +266,18 @@ HTML_TEMPLATE = """
         try {
             const res = await fetch('/upload', { method: 'POST', body: fd });
             const d = await res.json();
-            if(d.error) alert(d.error);
-            else { txt.innerText = "Success!"; updateUI(d.data); setTimeout(()=>sw('overview'), 500); }
-        } catch(e) { alert("Upload Failed. Check file format."); }
+            if(d.error) {
+                alert("Server Error: " + d.error);
+                txt.innerText = "Upload Failed";
+            } else { 
+                txt.innerText = "Success!"; 
+                updateUI(d.data); 
+                setTimeout(()=>sw('overview'), 500); 
+            }
+        } catch(e) { 
+            alert("Upload Failed. Ensure file is CSV or Excel."); 
+            txt.innerText = "Retry";
+        }
     });
 
     function initMap() {
@@ -292,14 +319,20 @@ HTML_TEMPLATE = """
             mainChart = new Chart(ctx, { type: 'bar', data: { labels: labels, datasets: [{ label: 'AQI', data: data.chart_data.aqi, backgroundColor: '#3b82f6', borderRadius: 4 }] }, options: { responsive: true, maintainAspectRatio: false, scales: { x: { display: false } } } });
         }
 
-        // HEATMAP UPDATE
+        // HEATMAP UPDATE (Clearer Intensity)
         if(data.chart_data.gps.length > 0) {
             if(!map) initMap();
             const firstPt = data.chart_data.gps[0];
             if(firstPt.lat != 0) map.setView([firstPt.lat, firstPt.lon], 13);
-            let heatPoints = data.chart_data.gps.map((pt, i) => [pt.lat, pt.lon, data.chart_data.aqi[i]/300]);
+            
+            // Scaled intensity for better visibility
+            let heatPoints = data.chart_data.gps.map((pt, i) => {
+                let intensity = Math.min(1.0, data.chart_data.aqi[i] / 200); // Scale: AQI 200 = Max Red
+                return [pt.lat, pt.lon, intensity];
+            });
+            
             if(heatLayer) map.removeLayer(heatLayer);
-            heatLayer = L.heatLayer(heatPoints, {radius: 25, blur: 15, maxZoom: 17}).addTo(map);
+            heatLayer = L.heatLayer(heatPoints, {radius: 35, blur: 20, maxZoom: 15, max: 1.0}).addTo(map);
         }
 
         document.getElementById('esp-console').innerHTML = data.esp32_log.join('<br>');
@@ -310,7 +343,7 @@ HTML_TEMPLATE = """
 """
 
 @app.route('/')
-def home(): return render_template_string(HTML_TEMPLATE)
+def home(): return render_template_string(HTML_HEAD + HTML_BODY)
 
 @app.route('/api/data')
 def get_data(): 
