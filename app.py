@@ -4,10 +4,10 @@ import io
 import re
 from datetime import datetime
 
-# Geopy for City Names
+# Geopy for City Names (Safe Import)
 try:
     from geopy.geocoders import Nominatim
-    geolocator = Nominatim(user_agent="skysense_atoms_final_v13")
+    geolocator = Nominatim(user_agent="skysense_deploy_fix_final")
 except ImportError:
     geolocator = None
 
@@ -98,14 +98,14 @@ def calculate_advanced_health(val):
     risks.sort(key=lambda x: x['prob'], reverse=True)
     return risks
 
-# --- UI TEMPLATE ---
+# --- UI TEMPLATE (ATOMS LAYOUT) ---
 HTML_TEMPLATE = """
 <!DOCTYPE html>
 <html lang="en">
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>SkySense | Atoms</title>
+    <title>SkySense | Atoms Dashboard</title>
     <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800&display=swap" rel="stylesheet">
     <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.4.0/css/all.min.css">
     <script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
@@ -125,48 +125,39 @@ HTML_TEMPLATE = """
         body { font-family: 'Inter', sans-serif; background: var(--bg); color: var(--text-dark); padding: 40px 20px; }
         .container { max-width: 1200px; margin: 0 auto; }
 
-        /* HEADER */
         .header { display: flex; justify-content: space-between; align-items: center; margin-bottom: 30px; }
         .logo { font-size: 1.8rem; font-weight: 800; color: var(--text-dark); letter-spacing: -1px; display:flex; align-items:center; gap:10px; }
         .logo i { color: var(--primary); }
-        .refresh-btn { background: var(--text-dark); color: white; border: none; padding: 10px 20px; border-radius: 8px; font-weight: 600; cursor: pointer; transition: 0.2s; }
-        .refresh-btn:hover { background: #334155; }
+        .refresh-btn { background: var(--text-dark); color: white; border: none; padding: 10px 20px; border-radius: 8px; font-weight: 600; cursor: pointer; }
 
-        /* ALERT */
         .alert-banner { background: #fff7ed; border: 1px solid #ffedd5; color: #9a3412; padding: 15px 20px; border-radius: 12px; margin-bottom: 30px; display:flex; align-items:center; gap:15px; }
         .alert-icon { background: #fdba74; color: #7c2d12; width:30px; height:30px; display:flex; align-items:center; justify-content:center; border-radius:50%; }
 
-        /* TABS */
         .nav-tabs { display: flex; gap: 8px; background: white; padding: 6px; border-radius: 12px; margin-bottom: 30px; border: 1px solid var(--border); width: fit-content; }
-        .tab-btn { border: none; background: transparent; padding: 8px 20px; font-weight: 600; color: var(--text-light); cursor: pointer; border-radius: 8px; transition: 0.2s; font-size: 0.9rem; }
+        .tab-btn { border: none; background: transparent; padding: 8px 20px; font-weight: 600; color: var(--text-light); cursor: pointer; border-radius: 8px; font-size: 0.9rem; }
         .tab-btn:hover { background: #f1f5f9; color: var(--text-dark); }
         .tab-btn.active { background: var(--text-dark); color: white; box-shadow: 0 2px 4px rgba(0,0,0,0.1); }
 
-        /* LAYOUT */
-        .section { display: none; animation: fadeIn 0.3s ease; }
+        .section { display: none; }
         .section.active { display: block; }
-        @keyframes fadeIn { from { opacity: 0; transform: translateY(5px); } to { opacity: 1; transform: translateY(0); } }
 
         .dashboard-grid { display: grid; grid-template-columns: 1.5fr 1fr; gap: 25px; }
         @media(max-width: 850px) { .dashboard-grid { grid-template-columns: 1fr; } }
 
-        .card { background: var(--card-bg); border-radius: 20px; padding: 30px; box-shadow: 0 4px 20px -2px rgba(0,0,0,0.05); border: 1px solid var(--border); height: 100%; position: relative; }
+        .card { background: var(--card-bg); border-radius: 20px; padding: 30px; box-shadow: 0 4px 20px -2px rgba(0,0,0,0.05); border: 1px solid var(--border); height: 100%; }
         .card-header { display: flex; justify-content: space-between; align-items: center; margin-bottom: 25px; }
         .card-title { font-size: 1.1rem; font-weight: 700; color: var(--text-dark); }
         
-        /* AQI SECTION */
         .aqi-wrapper { display: flex; align-items: center; justify-content: center; flex-direction: column; padding: 20px 0; }
         .aqi-num { font-size: 6rem; font-weight: 800; color: var(--orange); line-height: 1; letter-spacing: -2px; }
         .aqi-label { font-size: 1rem; font-weight: 600; color: var(--text-light); margin-top: 10px; }
         .location-pill { background: #f1f5f9; padding: 6px 15px; border-radius: 20px; font-size: 0.85rem; font-weight: 600; color: var(--text-dark); margin-top: 15px; display:flex; align-items:center; gap:6px; }
 
-        /* PROGRESS BARS */
         .metric-row { margin-bottom: 18px; }
         .metric-head { display: flex; justify-content: space-between; margin-bottom: 6px; font-size: 0.9rem; font-weight: 600; color: var(--text-dark); }
         .progress-track { height: 8px; background: #f1f5f9; border-radius: 4px; overflow: hidden; }
         .progress-fill { height: 100%; background: var(--text-dark); border-radius: 4px; transition: width 1s ease; }
 
-        /* STATS (RIGHT SIDE) */
         .summary-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 15px; margin-bottom: 30px; }
         .stat-card { background: #f8fafc; padding: 20px; border-radius: 16px; text-align: center; border: 1px solid var(--border); }
         .stat-card.highlight { background: #fff7ed; border-color: #ffedd5; }
@@ -181,9 +172,8 @@ HTML_TEMPLATE = """
         .risk-badge.High { background: #fef2f2; color: var(--danger); }
         .risk-badge.Moderate { background: #fff7ed; color: var(--orange); }
 
-        /* UPLOAD & HISTORY (FIXED) */
         .upload-area { 
-            display: block; /* FIX: Forces box to take width */
+            display: block; 
             width: 100%; 
             box-sizing: border-box;
             border: 2px dashed #cbd5e1; 
@@ -202,9 +192,7 @@ HTML_TEMPLATE = """
         .h-date { font-weight: 700; color: var(--text-dark); }
         .h-sub { font-size: 0.85rem; color: var(--text-light); }
 
-        /* ESP32 */
         .console { background: #0f172a; color: #4ade80; padding: 20px; border-radius: 12px; font-family: monospace; height: 200px; overflow-y: auto; font-size: 0.9rem; }
-
         .btn-main { background: var(--text-dark); color: white; text-decoration: none; padding: 12px 24px; border-radius: 8px; font-weight: 600; display: inline-block; text-align: center; }
         .footer { text-align: center; margin-top: 50px; color: var(--text-light); font-size: 0.85rem; }
     </style>
@@ -236,29 +224,24 @@ HTML_TEMPLATE = """
 
     <div id="overview" class="section active">
         <div class="dashboard-grid">
-            
             <div class="card">
                 <div class="card-header">
                     <div class="card-title">Air Quality Index</div>
                     <span style="background:#dcfce7; color:#166534; padding:4px 10px; border-radius:20px; font-size:0.75rem; font-weight:700;">LIVE MONITOR</span>
                 </div>
-                
                 <div class="aqi-wrapper">
                     <div class="aqi-num" id="aqi-val">--</div>
                     <div class="aqi-label">US AQI Standard</div>
                     <div class="location-pill"><i class="fa-solid fa-location-dot"></i> <span id="location-name">Unknown</span></div>
                 </div>
-
                 <div style="margin-top:30px;">
                     <div class="card-title" style="margin-bottom:15px; font-size:1rem;">Key Pollutants</div>
                     <div id="metric-container"></div>
                 </div>
                 <div style="margin-top:20px; font-size:0.8rem; color:#94a3b8; text-align:center;">Last Update: <span id="last-update">--</span></div>
             </div>
-
             <div class="card">
                 <div class="card-title" style="margin-bottom:20px;">Health Summary</div>
-                
                 <div class="summary-grid">
                     <div class="stat-card">
                         <div class="stat-val" id="aqi-score">--</div>
@@ -269,13 +252,11 @@ HTML_TEMPLATE = """
                         <div class="stat-name">Risks Found</div>
                     </div>
                 </div>
-
                 <div class="card-title" style="margin-bottom:15px; font-size:1rem;">Detected Risks</div>
                 <div id="risk-container">
                     <p style="color:#94a3b8; text-align:center; padding:20px;">Safe Conditions.</p>
                 </div>
             </div>
-
         </div>
     </div>
 
@@ -317,7 +298,6 @@ HTML_TEMPLATE = """
             <div class="card-title" style="margin-bottom:20px;">Upload Data</div>
             <p style="margin-bottom:5px; font-weight:600; font-size:0.9rem; color:var(--text-light);">Select Date</p>
             <input type="date" id="upload-date" class="date-input">
-            
             <label class="upload-area">
                 <i class="fa-solid fa-cloud-arrow-up" style="font-size:2.5rem; color:#cbd5e1; margin-bottom:15px; display:block;"></i>
                 <div id="upload-text" style="font-weight:600; color:#475569;">Click to Browse CSV / Excel</div>
@@ -329,7 +309,7 @@ HTML_TEMPLATE = """
     <div id="export" class="section">
         <div class="card">
             <div class="card-title">Export Data</div>
-            <p style="color:#64748b; margin:15px 0 25px 0;">Download a complete CSV report of the current session including all health metrics.</p>
+            <p style="color:#64748b; margin:15px 0 25px 0;">Download a complete CSV report of the current session.</p>
             <a href="/export" class="btn-main">Download Full Report</a>
         </div>
     </div>
@@ -350,7 +330,6 @@ HTML_TEMPLATE = """
     document.getElementById('fileInput').addEventListener('change', async (e) => {
         const file = e.target.files[0];
         const dateInput = document.getElementById('upload-date');
-        
         if(!dateInput.value) { alert("Please select a date first!"); e.target.value = ''; return; }
         if(!file) return;
 
@@ -374,13 +353,12 @@ HTML_TEMPLATE = """
         document.getElementById('last-update').innerText = data.last_updated;
         document.getElementById('alert-msg').innerText = data.aqi > 100 ? "Warning: Poor air quality detected." : "Air quality is good.";
 
-        // METRICS BARS
         const mContainer = document.getElementById('metric-container');
         mContainer.innerHTML = '';
         const items = [
             {k:'pm25', l:'PM 2.5', u:'ug/m3', m:100},
             {k:'pm10', l:'PM 10', u:'ug/m3', m:150},
-            {k:'temp', l:'Temperature', u:'°C', m:50},
+            {k:'temp', l:'Temperature', u:'C', m:50},
             {k:'hum', l:'Humidity', u:'%', m:100},
             {k:'pm1', l:'PM 1.0', u:'ug/m3', m:100}
         ];
@@ -394,7 +372,6 @@ HTML_TEMPLATE = """
             </div>`;
         });
 
-        // RISKS
         const rContainer = document.getElementById('risk-container');
         if(data.health_risks.length > 0) {
             rContainer.innerHTML = '';
@@ -407,7 +384,6 @@ HTML_TEMPLATE = """
             });
         }
 
-        // HISTORY
         if(data.history && data.history.length > 0) {
             const hContainer = document.getElementById('history-container');
             hContainer.innerHTML = '';
@@ -423,7 +399,6 @@ HTML_TEMPLATE = """
             });
         }
 
-        // CHART
         if(data.chart_data.aqi.length > 0) {
             const ctx = document.getElementById('mainChart').getContext('2d');
             const labels = data.chart_data.gps.map(g => `${Number(g.lat).toFixed(4)}, ${Number(g.lon).toFixed(4)}`);
