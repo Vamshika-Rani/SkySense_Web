@@ -498,7 +498,7 @@ def receive_sensor():
         # Get City Name (Live)
         current_data['location_name'] = get_city_name(data.get('lat',0), data.get('lon',0))
 
-        # Append Data
+        # Append Data.
         for k in ['pm25','pm10','no2','so2','co']:
             current_data['chart_data'][k].append(data.get(k, 0))
             if len(current_data['chart_data'][k]) > 50: current_data['chart_data'][k].pop(0)
