@@ -6,13 +6,13 @@ import datetime
 # Safe Import for Geopy
 try:
     from geopy.geocoders import Nominatim
-    geolocator = Nominatim(user_agent="skysense_final_v105")
+    geolocator = Nominatim(user_agent="skysense_final_v106")
 except ImportError:
     geolocator = None
 
 app = Flask(__name__)
 
-# --- GLOBAL DATA STORE ---
+# --- GLOBAL DATA ---
 history_log = [] 
 current_data = {
     "aqi": 0, "pm1": 0, "pm25": 0, "pm10": 0, "temp": 0, "hum": 0,
@@ -22,30 +22,28 @@ current_data = {
     "last_updated": "Never"
 }
 
-# --- ROBUST FILE READER (Fixed) ---
+# --- ROBUST FILE READER (Fixes the .xlsx/.csv mismatch) ---
 def read_file_safely(file):
-    # Reset file pointer to beginning
-    file.seek(0)
-    
-    # Attempt 1: Read as Excel (Standard)
+    # 1. Try reading as Excel (Standard)
     try:
+        file.seek(0)
         return pd.read_excel(file)
-    except Exception:
+    except:
         pass
         
-    # Attempt 2: Read as CSV (Standard)
+    # 2. Try reading as CSV (Standard)
     try:
         file.seek(0)
         return pd.read_csv(file)
-    except Exception:
+    except:
         pass
 
-    # Attempt 3: Read as Text/CSV with different encodings
+    # 3. Try reading as Text/CSV with latin encoding (Fallback)
     try:
         file.seek(0)
-        return pd.read_csv(file, encoding='utf-8', sep=None, engine='python')
-    except Exception:
-        raise ValueError("File format not recognized. Please upload a valid .csv or .xlsx file.")
+        return pd.read_csv(file, encoding='latin1', sep=None, engine='python')
+    except:
+        raise ValueError("Could not read file. Ensure it is a valid CSV or Excel file.")
 
 def normalize_columns(df):
     col_map = {}
@@ -56,9 +54,6 @@ def normalize_columns(df):
         elif 'pm10' in c: col_map[col] = 'pm10'
         elif 'temp' in c: col_map[col] = 'temp'
         elif 'hum' in c: col_map[col] = 'hum'
-        elif 'press' in c: col_map[col] = 'press'
-        elif 'gas' in c: col_map[col] = 'gas'
-        elif 'alt' in c: col_map[col] = 'alt'
         elif 'lat' in c or 'lal' in c: col_map[col] = 'lat'
         elif 'lon' in c or 'lng' in c: col_map[col] = 'lon'
     return df.rename(columns=col_map)
@@ -85,7 +80,7 @@ def calc_health(val):
     risks.sort(key=lambda x: x['prob'], reverse=True)
     return risks
 
-# --- HTML TEMPLATE PARTS (Split to prevent Syntax Error) ---
+# --- PART 1: HTML HEAD & STYLE ---
 HTML_HEAD = """
 <!DOCTYPE html>
 <html lang="en">
@@ -144,6 +139,7 @@ HTML_HEAD = """
 </head>
 """
 
+# --- PART 2: HTML BODY & SCRIPT ---
 HTML_BODY = """
 <body>
 <div class="container">
@@ -325,9 +321,10 @@ HTML_BODY = """
             const firstPt = data.chart_data.gps[0];
             if(firstPt.lat != 0) map.setView([firstPt.lat, firstPt.lon], 13);
             
-            // Scaled intensity for better visibility
+            // Scaled intensity: Heatmap needs 0.0 to 1.0. 
+            // We scale AQI so 200+ is max red (1.0).
             let heatPoints = data.chart_data.gps.map((pt, i) => {
-                let intensity = Math.min(1.0, data.chart_data.aqi[i] / 200); // Scale: AQI 200 = Max Red
+                let intensity = Math.min(1.0, data.chart_data.aqi[i] / 200); 
                 return [pt.lat, pt.lon, intensity];
             });
             
@@ -341,6 +338,8 @@ HTML_BODY = """
 </body>
 </html>
 """
+
+# --- BACKEND ROUTES ---
 
 @app.route('/')
 def home(): return render_template_string(HTML_HEAD + HTML_BODY)
