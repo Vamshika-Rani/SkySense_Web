@@ -1,19 +1,19 @@
-from flask import Flask, render_template_string, jsonify, request
+from flask import Flask, render_template_string, jsonify, request, send_file
 import pandas as pd
 import io
 import re
 from datetime import datetime
 
-# Geopy for City Names (Safe Import)
+# Geopy Setup (Safe Import)
 try:
     from geopy.geocoders import Nominatim
-    geolocator = Nominatim(user_agent="skysense_deploy_fix_final")
+    geolocator = Nominatim(user_agent="skysense_final_v16")
 except ImportError:
     geolocator = None
 
 app = Flask(__name__)
 
-# --- GLOBAL DATA STORE ---
+# --- GLOBAL DATA ---
 history_log = [] 
 
 current_data = {
@@ -33,8 +33,8 @@ current_data = {
 def normalize_columns(df):
     col_map = {}
     for col in df.columns:
-        c_lower = col.lower().strip()
-        if 'pm1.0' in c_lower or 'pm1' in c_lower and 'pm10' not in c_lower: col_map[col] = 'pm1'
+        c_lower = str(col).lower().strip()
+        if 'pm1.0' in c_lower or ('pm1' in c_lower and 'pm10' not in c_lower): col_map[col] = 'pm1'
         elif 'pm2.5' in c_lower or 'pm25' in c_lower: col_map[col] = 'pm25'
         elif 'pm10' in c_lower: col_map[col] = 'pm10'
         elif 'temp' in c_lower: col_map[col] = 'temp'
@@ -42,12 +42,12 @@ def normalize_columns(df):
         elif 'press' in c_lower: col_map[col] = 'press'
         elif 'gas' in c_lower: col_map[col] = 'gas'
         elif 'alt' in c_lower: col_map[col] = 'alt'
-        # Typo fix for 'lalitude'
+        # Fix for 'lalitude' typo
         elif 'lat' in c_lower or 'lal' in c_lower: col_map[col] = 'lat'
         elif 'lon' in c_lower or 'lng' in c_lower: col_map[col] = 'lon'
     return df.rename(columns=col_map)
 
-# --- CITY NAME HELPER ---
+# --- LOCATION HELPER ---
 def get_city_name(lat, lon):
     if not geolocator or lat == 0: return "Unknown Area"
     try:
@@ -98,7 +98,7 @@ def calculate_advanced_health(val):
     risks.sort(key=lambda x: x['prob'], reverse=True)
     return risks
 
-# --- UI TEMPLATE (ATOMS LAYOUT) ---
+# --- UI TEMPLATE ---
 HTML_TEMPLATE = """
 <!DOCTYPE html>
 <html lang="en">
@@ -117,7 +117,7 @@ HTML_TEMPLATE = """
             --text-light: #64748b; 
             --primary: #2563eb; 
             --orange: #f97316; 
-            --danger: #ef4444;
+            --danger: #ef4444; 
             --success: #22c55e;
             --border: #e2e8f0;
         }
@@ -125,39 +125,48 @@ HTML_TEMPLATE = """
         body { font-family: 'Inter', sans-serif; background: var(--bg); color: var(--text-dark); padding: 40px 20px; }
         .container { max-width: 1200px; margin: 0 auto; }
 
+        /* HEADER */
         .header { display: flex; justify-content: space-between; align-items: center; margin-bottom: 30px; }
         .logo { font-size: 1.8rem; font-weight: 800; color: var(--text-dark); letter-spacing: -1px; display:flex; align-items:center; gap:10px; }
         .logo i { color: var(--primary); }
-        .refresh-btn { background: var(--text-dark); color: white; border: none; padding: 10px 20px; border-radius: 8px; font-weight: 600; cursor: pointer; }
+        .refresh-btn { background: var(--text-dark); color: white; border: none; padding: 10px 20px; border-radius: 8px; font-weight: 600; cursor: pointer; transition: 0.2s; }
+        .refresh-btn:hover { background: #334155; }
 
+        /* ALERT */
         .alert-banner { background: #fff7ed; border: 1px solid #ffedd5; color: #9a3412; padding: 15px 20px; border-radius: 12px; margin-bottom: 30px; display:flex; align-items:center; gap:15px; }
         .alert-icon { background: #fdba74; color: #7c2d12; width:30px; height:30px; display:flex; align-items:center; justify-content:center; border-radius:50%; }
 
+        /* TABS */
         .nav-tabs { display: flex; gap: 8px; background: white; padding: 6px; border-radius: 12px; margin-bottom: 30px; border: 1px solid var(--border); width: fit-content; }
-        .tab-btn { border: none; background: transparent; padding: 8px 20px; font-weight: 600; color: var(--text-light); cursor: pointer; border-radius: 8px; font-size: 0.9rem; }
+        .tab-btn { border: none; background: transparent; padding: 8px 20px; font-weight: 600; color: var(--text-light); cursor: pointer; border-radius: 8px; transition: 0.2s; font-size: 0.9rem; }
         .tab-btn:hover { background: #f1f5f9; color: var(--text-dark); }
         .tab-btn.active { background: var(--text-dark); color: white; box-shadow: 0 2px 4px rgba(0,0,0,0.1); }
 
-        .section { display: none; }
+        /* LAYOUT */
+        .section { display: none; animation: fadeIn 0.3s ease; }
         .section.active { display: block; }
+        @keyframes fadeIn { from { opacity: 0; transform: translateY(5px); } to { opacity: 1; transform: translateY(0); } }
 
         .dashboard-grid { display: grid; grid-template-columns: 1.5fr 1fr; gap: 25px; }
         @media(max-width: 850px) { .dashboard-grid { grid-template-columns: 1fr; } }
 
-        .card { background: var(--card-bg); border-radius: 20px; padding: 30px; box-shadow: 0 4px 20px -2px rgba(0,0,0,0.05); border: 1px solid var(--border); height: 100%; }
+        .card { background: var(--card-bg); border-radius: 20px; padding: 30px; box-shadow: 0 4px 20px -2px rgba(0,0,0,0.05); border: 1px solid var(--border); height: 100%; position: relative; }
         .card-header { display: flex; justify-content: space-between; align-items: center; margin-bottom: 25px; }
         .card-title { font-size: 1.1rem; font-weight: 700; color: var(--text-dark); }
         
+        /* AQI SECTION */
         .aqi-wrapper { display: flex; align-items: center; justify-content: center; flex-direction: column; padding: 20px 0; }
         .aqi-num { font-size: 6rem; font-weight: 800; color: var(--orange); line-height: 1; letter-spacing: -2px; }
         .aqi-label { font-size: 1rem; font-weight: 600; color: var(--text-light); margin-top: 10px; }
         .location-pill { background: #f1f5f9; padding: 6px 15px; border-radius: 20px; font-size: 0.85rem; font-weight: 600; color: var(--text-dark); margin-top: 15px; display:flex; align-items:center; gap:6px; }
 
+        /* PROGRESS BARS */
         .metric-row { margin-bottom: 18px; }
         .metric-head { display: flex; justify-content: space-between; margin-bottom: 6px; font-size: 0.9rem; font-weight: 600; color: var(--text-dark); }
         .progress-track { height: 8px; background: #f1f5f9; border-radius: 4px; overflow: hidden; }
         .progress-fill { height: 100%; background: var(--text-dark); border-radius: 4px; transition: width 1s ease; }
 
+        /* STATS (RIGHT SIDE) */
         .summary-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 15px; margin-bottom: 30px; }
         .stat-card { background: #f8fafc; padding: 20px; border-radius: 16px; text-align: center; border: 1px solid var(--border); }
         .stat-card.highlight { background: #fff7ed; border-color: #ffedd5; }
@@ -172,6 +181,7 @@ HTML_TEMPLATE = """
         .risk-badge.High { background: #fef2f2; color: var(--danger); }
         .risk-badge.Moderate { background: #fff7ed; color: var(--orange); }
 
+        /* UPLOAD & HISTORY */
         .upload-area { 
             display: block; 
             width: 100%; 
@@ -186,13 +196,15 @@ HTML_TEMPLATE = """
             margin-top: 15px;
         }
         .upload-area:hover { border-color: var(--primary); background: #eff6ff; }
-        .date-input { width: 100%; padding: 12px; border: 1px solid var(--border); border-radius: 8px; margin-bottom: 10px; font-family: 'Inter', sans-serif; font-size: 1rem; }
+        .date-input { width: 100%; padding: 12px; border: 1px solid var(--border); border-radius: 8px; margin-bottom: 10px; font-family: 'Inter', sans-serif; font-size: 1rem; box-sizing: border-box; }
         
         .history-row { display: flex; justify-content: space-between; padding: 15px; background: #fff; border: 1px solid var(--border); border-radius: 10px; margin-bottom: 10px; align-items: center; }
         .h-date { font-weight: 700; color: var(--text-dark); }
         .h-sub { font-size: 0.85rem; color: var(--text-light); }
 
+        /* ESP32 */
         .console { background: #0f172a; color: #4ade80; padding: 20px; border-radius: 12px; font-family: monospace; height: 200px; overflow-y: auto; font-size: 0.9rem; }
+
         .btn-main { background: var(--text-dark); color: white; text-decoration: none; padding: 12px 24px; border-radius: 8px; font-weight: 600; display: inline-block; text-align: center; }
         .footer { text-align: center; margin-top: 50px; color: var(--text-light); font-size: 0.85rem; }
     </style>
@@ -309,12 +321,12 @@ HTML_TEMPLATE = """
     <div id="export" class="section">
         <div class="card">
             <div class="card-title">Export Data</div>
-            <p style="color:#64748b; margin:15px 0 25px 0;">Download a complete CSV report of the current session.</p>
+            <p style="color:#64748b; margin:15px 0 25px 0;">Download a complete CSV report of the current session including all health metrics.</p>
             <a href="/export" class="btn-main">Download Full Report</a>
         </div>
     </div>
 
-    <div class="footer">SkySense v13.0 | Atoms Design System</div>
+    <div class="footer">SkySense v16.0 | Atoms Design System</div>
 </div>
 
 <script>
@@ -330,6 +342,7 @@ HTML_TEMPLATE = """
     document.getElementById('fileInput').addEventListener('change', async (e) => {
         const file = e.target.files[0];
         const dateInput = document.getElementById('upload-date');
+        
         if(!dateInput.value) { alert("Please select a date first!"); e.target.value = ''; return; }
         if(!file) return;
 
