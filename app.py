@@ -7,7 +7,7 @@ from datetime import datetime
 # Geopy Setup (Safe Import)
 try:
     from geopy.geocoders import Nominatim
-    geolocator = Nominatim(user_agent="skysense_final_v17")
+    geolocator = Nominatim(user_agent="skysense_dark_v14")
 except ImportError:
     geolocator = None
 
@@ -98,49 +98,50 @@ def calculate_advanced_health(val):
     risks.sort(key=lambda x: x['prob'], reverse=True)
     return risks
 
-# --- UI TEMPLATE (ATOMS LAYOUT) ---
+# --- UI TEMPLATE (DARK MODE) ---
 HTML_TEMPLATE = """
 <!DOCTYPE html>
 <html lang="en">
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>SkySense | Atoms Dashboard</title>
+    <title>SkySense | Dark</title>
     <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800&display=swap" rel="stylesheet">
     <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.4.0/css/all.min.css">
     <script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
     <style>
         :root { 
-            --bg: #f8fafc; 
-            --card-bg: #ffffff; 
-            --text-dark: #0f172a; 
-            --text-light: #64748b; 
-            --primary: #2563eb; 
-            --orange: #f97316; 
+            --bg: #0f172a; 
+            --card-bg: #1e293b; 
+            --text-main: #f1f5f9; 
+            --text-muted: #94a3b8; 
+            --primary: #3b82f6; 
+            --orange: #f59e0b; 
             --danger: #ef4444; 
             --success: #22c55e;
-            --border: #e2e8f0;
+            --border: #334155;
+            --input-bg: #0f172a;
         }
         * { box-sizing: border-box; margin: 0; padding: 0; }
-        body { font-family: 'Inter', sans-serif; background: var(--bg); color: var(--text-dark); padding: 40px 20px; }
+        body { font-family: 'Inter', sans-serif; background: var(--bg); color: var(--text-main); padding: 40px 20px; }
         .container { max-width: 1200px; margin: 0 auto; }
 
         /* HEADER */
         .header { display: flex; justify-content: space-between; align-items: center; margin-bottom: 30px; }
-        .logo { font-size: 1.8rem; font-weight: 800; color: var(--text-dark); letter-spacing: -1px; display:flex; align-items:center; gap:10px; }
+        .logo { font-size: 1.8rem; font-weight: 800; color: var(--text-main); letter-spacing: -1px; display:flex; align-items:center; gap:10px; }
         .logo i { color: var(--primary); }
-        .refresh-btn { background: var(--text-dark); color: white; border: none; padding: 10px 20px; border-radius: 8px; font-weight: 600; cursor: pointer; transition: 0.2s; }
-        .refresh-btn:hover { background: #334155; }
+        .refresh-btn { background: var(--primary); color: white; border: none; padding: 10px 20px; border-radius: 8px; font-weight: 600; cursor: pointer; transition: 0.2s; }
+        .refresh-btn:hover { background: #2563eb; }
 
         /* ALERT */
-        .alert-banner { background: #fff7ed; border: 1px solid #ffedd5; color: #9a3412; padding: 15px 20px; border-radius: 12px; margin-bottom: 30px; display:flex; align-items:center; gap:15px; }
-        .alert-icon { background: #fdba74; color: #7c2d12; width:30px; height:30px; display:flex; align-items:center; justify-content:center; border-radius:50%; }
+        .alert-banner { background: rgba(245, 158, 11, 0.1); border: 1px solid rgba(245, 158, 11, 0.3); color: var(--orange); padding: 15px 20px; border-radius: 12px; margin-bottom: 30px; display:flex; align-items:center; gap:15px; }
+        .alert-icon { background: rgba(245, 158, 11, 0.2); color: var(--orange); width:30px; height:30px; display:flex; align-items:center; justify-content:center; border-radius:50%; }
 
         /* TABS */
-        .nav-tabs { display: flex; gap: 8px; background: white; padding: 6px; border-radius: 12px; margin-bottom: 30px; border: 1px solid var(--border); width: fit-content; }
-        .tab-btn { border: none; background: transparent; padding: 8px 20px; font-weight: 600; color: var(--text-light); cursor: pointer; border-radius: 8px; transition: 0.2s; font-size: 0.9rem; }
-        .tab-btn:hover { background: #f1f5f9; color: var(--text-dark); }
-        .tab-btn.active { background: var(--text-dark); color: white; box-shadow: 0 2px 4px rgba(0,0,0,0.1); }
+        .nav-tabs { display: flex; gap: 8px; background: var(--card-bg); padding: 6px; border-radius: 12px; margin-bottom: 30px; border: 1px solid var(--border); width: fit-content; }
+        .tab-btn { border: none; background: transparent; padding: 8px 20px; font-weight: 600; color: var(--text-muted); cursor: pointer; border-radius: 8px; transition: 0.2s; font-size: 0.9rem; }
+        .tab-btn:hover { background: var(--bg); color: var(--text-main); }
+        .tab-btn.active { background: var(--primary); color: white; }
 
         /* LAYOUT */
         .section { display: none; animation: fadeIn 0.3s ease; }
@@ -150,63 +151,61 @@ HTML_TEMPLATE = """
         .dashboard-grid { display: grid; grid-template-columns: 1.5fr 1fr; gap: 25px; }
         @media(max-width: 850px) { .dashboard-grid { grid-template-columns: 1fr; } }
 
-        .card { background: var(--card-bg); border-radius: 20px; padding: 30px; box-shadow: 0 4px 20px -2px rgba(0,0,0,0.05); border: 1px solid var(--border); height: 100%; position: relative; }
+        .card { background: var(--card-bg); border-radius: 20px; padding: 30px; box-shadow: 0 4px 20px -2px rgba(0,0,0,0.3); border: 1px solid var(--border); height: 100%; position: relative; }
         .card-header { display: flex; justify-content: space-between; align-items: center; margin-bottom: 25px; }
-        .card-title { font-size: 1.1rem; font-weight: 700; color: var(--text-dark); }
+        .card-title { font-size: 1.1rem; font-weight: 700; color: var(--text-main); }
         
         /* AQI SECTION */
         .aqi-wrapper { display: flex; align-items: center; justify-content: center; flex-direction: column; padding: 20px 0; }
         .aqi-num { font-size: 6rem; font-weight: 800; color: var(--orange); line-height: 1; letter-spacing: -2px; }
-        .aqi-label { font-size: 1rem; font-weight: 600; color: var(--text-light); margin-top: 10px; }
-        .location-pill { background: #f1f5f9; padding: 6px 15px; border-radius: 20px; font-size: 0.85rem; font-weight: 600; color: var(--text-dark); margin-top: 15px; display:flex; align-items:center; gap:6px; }
+        .aqi-label { font-size: 1rem; font-weight: 600; color: var(--text-muted); margin-top: 10px; }
+        .location-pill { background: var(--bg); padding: 6px 15px; border-radius: 20px; font-size: 0.85rem; font-weight: 600; color: var(--text-main); margin-top: 15px; display:flex; align-items:center; gap:6px; border: 1px solid var(--border); }
 
         /* PROGRESS BARS */
         .metric-row { margin-bottom: 18px; }
-        .metric-head { display: flex; justify-content: space-between; margin-bottom: 6px; font-size: 0.9rem; font-weight: 600; color: var(--text-dark); }
-        .progress-track { height: 8px; background: #f1f5f9; border-radius: 4px; overflow: hidden; }
-        .progress-fill { height: 100%; background: var(--text-dark); border-radius: 4px; transition: width 1s ease; }
+        .metric-head { display: flex; justify-content: space-between; margin-bottom: 6px; font-size: 0.9rem; font-weight: 600; color: var(--text-main); }
+        .progress-track { height: 8px; background: var(--bg); border-radius: 4px; overflow: hidden; }
+        .progress-fill { height: 100%; background: var(--primary); border-radius: 4px; transition: width 1s ease; }
 
         /* STATS (RIGHT SIDE) */
         .summary-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 15px; margin-bottom: 30px; }
-        .stat-card { background: #f8fafc; padding: 20px; border-radius: 16px; text-align: center; border: 1px solid var(--border); }
-        .stat-card.highlight { background: #fff7ed; border-color: #ffedd5; }
+        .stat-card { background: var(--bg); padding: 20px; border-radius: 16px; text-align: center; border: 1px solid var(--border); }
+        .stat-card.highlight { background: rgba(245, 158, 11, 0.1); border-color: rgba(245, 158, 11, 0.3); }
         .stat-val { font-size: 1.8rem; font-weight: 800; color: var(--primary); }
         .stat-card.highlight .stat-val { color: var(--orange); }
-        .stat-name { font-size: 0.8rem; font-weight: 600; color: var(--text-light); text-transform: uppercase; letter-spacing: 0.5px; margin-top: 5px; }
+        .stat-name { font-size: 0.8rem; font-weight: 600; color: var(--text-muted); text-transform: uppercase; letter-spacing: 0.5px; margin-top: 5px; }
 
         .risk-item { display: flex; justify-content: space-between; align-items: center; padding: 15px 0; border-bottom: 1px solid var(--border); }
         .risk-item:last-child { border-bottom: none; }
-        .risk-name { font-weight: 600; font-size: 0.95rem; }
+        .risk-name { font-weight: 600; font-size: 0.95rem; color: var(--text-main); }
         .risk-badge { font-size: 0.8rem; font-weight: 700; padding: 4px 10px; border-radius: 6px; }
-        .risk-badge.High { background: #fef2f2; color: var(--danger); }
-        .risk-badge.Moderate { background: #fff7ed; color: var(--orange); }
+        .risk-badge.High { background: rgba(239, 68, 68, 0.2); color: var(--danger); }
+        .risk-badge.Moderate { background: rgba(245, 158, 11, 0.2); color: var(--orange); }
 
         /* UPLOAD & HISTORY */
         .upload-area { 
             display: block; 
             width: 100%; 
             box-sizing: border-box;
-            border: 2px dashed #cbd5e1; 
+            border: 2px dashed var(--border); 
             padding: 50px 20px; 
             text-align: center; 
             border-radius: 16px; 
             cursor: pointer; 
             transition: 0.2s; 
-            background: #f8fafc; 
+            background: var(--bg); 
             margin-top: 15px;
         }
-        .upload-area:hover { border-color: var(--primary); background: #eff6ff; }
-        .date-input { width: 100%; padding: 12px; border: 1px solid var(--border); border-radius: 8px; margin-bottom: 10px; font-family: 'Inter', sans-serif; font-size: 1rem; box-sizing: border-box; }
+        .upload-area:hover { border-color: var(--primary); background: rgba(59, 130, 246, 0.1); }
+        .date-input { width: 100%; padding: 12px; border: 1px solid var(--border); border-radius: 8px; margin-bottom: 10px; font-family: 'Inter', sans-serif; font-size: 1rem; box-sizing: border-box; background: var(--bg); color: var(--text-main); }
         
-        .history-row { display: flex; justify-content: space-between; padding: 15px; background: #fff; border: 1px solid var(--border); border-radius: 10px; margin-bottom: 10px; align-items: center; }
-        .h-date { font-weight: 700; color: var(--text-dark); }
-        .h-sub { font-size: 0.85rem; color: var(--text-light); }
+        .history-row { display: flex; justify-content: space-between; padding: 15px; background: var(--bg); border: 1px solid var(--border); border-radius: 10px; margin-bottom: 10px; align-items: center; }
+        .h-date { font-weight: 700; color: var(--text-main); }
+        .h-sub { font-size: 0.85rem; color: var(--text-muted); }
 
-        /* ESP32 */
-        .console { background: #0f172a; color: #4ade80; padding: 20px; border-radius: 12px; font-family: monospace; height: 200px; overflow-y: auto; font-size: 0.9rem; }
-
-        .btn-main { background: var(--text-dark); color: white; text-decoration: none; padding: 12px 24px; border-radius: 8px; font-weight: 600; display: inline-block; text-align: center; }
-        .footer { text-align: center; margin-top: 50px; color: var(--text-light); font-size: 0.85rem; }
+        .console { background: #0f172a; color: #4ade80; padding: 20px; border-radius: 12px; font-family: monospace; height: 200px; overflow-y: auto; font-size: 0.9rem; border: 1px solid var(--border); }
+        .btn-main { background: var(--primary); color: white; text-decoration: none; padding: 12px 24px; border-radius: 8px; font-weight: 600; display: inline-block; text-align: center; border: none; cursor: pointer; }
+        .footer { text-align: center; margin-top: 50px; color: var(--text-muted); font-size: 0.85rem; }
     </style>
 </head>
 <body>
@@ -220,7 +219,7 @@ HTML_TEMPLATE = """
     <div class="alert-banner">
         <div class="alert-icon"><i class="fa-solid fa-triangle-exclamation"></i></div>
         <div>
-            <div style="font-weight:700; color:#9a3412;">Health Alert System</div>
+            <div style="font-weight:700;">Health Alert System</div>
             <div style="font-size:0.9rem; margin-top:2px;" id="alert-msg">Waiting for sensor data...</div>
         </div>
     </div>
@@ -236,29 +235,24 @@ HTML_TEMPLATE = """
 
     <div id="overview" class="section active">
         <div class="dashboard-grid">
-            
             <div class="card">
                 <div class="card-header">
                     <div class="card-title">Air Quality Index</div>
-                    <span style="background:#dcfce7; color:#166534; padding:4px 10px; border-radius:20px; font-size:0.75rem; font-weight:700;">LIVE MONITOR</span>
+                    <span style="background:rgba(34, 197, 94, 0.2); color:#22c55e; padding:4px 10px; border-radius:20px; font-size:0.75rem; font-weight:700;">LIVE MONITOR</span>
                 </div>
-                
                 <div class="aqi-wrapper">
                     <div class="aqi-num" id="aqi-val">--</div>
                     <div class="aqi-label">US AQI Standard</div>
                     <div class="location-pill"><i class="fa-solid fa-location-dot"></i> <span id="location-name">Unknown</span></div>
                 </div>
-
                 <div style="margin-top:30px;">
                     <div class="card-title" style="margin-bottom:15px; font-size:1rem;">Key Pollutants</div>
                     <div id="metric-container"></div>
                 </div>
-                <div style="margin-top:20px; font-size:0.8rem; color:#94a3b8; text-align:center;">Last Update: <span id="last-update">--</span></div>
+                <div style="margin-top:20px; font-size:0.8rem; color:var(--text-muted); text-align:center;">Last Update: <span id="last-update">--</span></div>
             </div>
-
             <div class="card">
                 <div class="card-title" style="margin-bottom:20px;">Health Summary</div>
-                
                 <div class="summary-grid">
                     <div class="stat-card">
                         <div class="stat-val" id="aqi-score">--</div>
@@ -269,13 +263,11 @@ HTML_TEMPLATE = """
                         <div class="stat-name">Risks Found</div>
                     </div>
                 </div>
-
                 <div class="card-title" style="margin-bottom:15px; font-size:1rem;">Detected Risks</div>
                 <div id="risk-container">
-                    <p style="color:#94a3b8; text-align:center; padding:20px;">Safe Conditions.</p>
+                    <p style="color:var(--text-muted); text-align:center; padding:20px;">Safe Conditions.</p>
                 </div>
             </div>
-
         </div>
     </div>
 
@@ -290,23 +282,23 @@ HTML_TEMPLATE = """
         <div class="card">
             <div class="card-title" style="margin-bottom:20px;">Upload History</div>
             <div id="history-container">
-                <p style="color:#94a3b8; text-align:center; padding:30px;">No files uploaded yet.</p>
+                <p style="color:var(--text-muted); text-align:center; padding:30px;">No files uploaded yet.</p>
             </div>
         </div>
     </div>
 
     <div id="esp32" class="section">
         <div class="dashboard-grid">
-            <div class="card" style="background:#0f172a; color:white; border:none;">
-                <div class="card-title" style="color:white;">Connection Info</div>
+            <div class="card">
+                <div class="card-title">Connection Info</div>
                 <div style="margin-top:20px; line-height:1.8;">
                     <p><strong>Protocol:</strong> JSON over HTTP</p>
                     <p><strong>Endpoint:</strong> <code style="background:#334155; padding:2px 6px; border-radius:4px;">/api/upload_sensor</code></p>
                     <p><strong>Status:</strong> <span style="color:#4ade80;">● Listening for ESP32...</span></p>
                 </div>
             </div>
-            <div class="card" style="background:#0f172a; color:white; border:none;">
-                <div class="card-title" style="color:white;">Live Telemetry</div>
+            <div class="card">
+                <div class="card-title">Live Telemetry</div>
                 <div class="console" id="esp-console"></div>
             </div>
         </div>
@@ -315,12 +307,11 @@ HTML_TEMPLATE = """
     <div id="upload" class="section">
         <div class="card">
             <div class="card-title" style="margin-bottom:20px;">Upload Data</div>
-            <p style="margin-bottom:5px; font-weight:600; font-size:0.9rem; color:var(--text-light);">Select Date</p>
+            <p style="margin-bottom:5px; font-weight:600; font-size:0.9rem; color:var(--text-muted);">Select Date</p>
             <input type="date" id="upload-date" class="date-input">
-            
             <label class="upload-area">
-                <i class="fa-solid fa-cloud-arrow-up" style="font-size:2.5rem; color:#cbd5e1; margin-bottom:15px; display:block;"></i>
-                <div id="upload-text" style="font-weight:600; color:#475569;">Click to Browse CSV / Excel</div>
+                <i class="fa-solid fa-cloud-arrow-up" style="font-size:2.5rem; color:#64748b; margin-bottom:15px; display:block;"></i>
+                <div id="upload-text" style="font-weight:600; color:var(--text-muted);">Click to Browse CSV / Excel</div>
                 <input type="file" id="fileInput" style="display:none;">
             </label>
         </div>
@@ -329,15 +320,19 @@ HTML_TEMPLATE = """
     <div id="export" class="section">
         <div class="card">
             <div class="card-title">Export Data</div>
-            <p style="color:#64748b; margin:15px 0 25px 0;">Download a complete CSV report of the current session including all health metrics.</p>
+            <p style="color:var(--text-muted); margin:15px 0 25px 0;">Download a complete CSV report of the current session including all health metrics.</p>
             <a href="/export" class="btn-main">Download Full Report</a>
         </div>
     </div>
 
-    <div class="footer">SkySense v17.0 | Atoms Design System</div>
+    <div class="footer">SkySense v14.0 | Dark Mode Atoms</div>
 </div>
 
 <script>
+    // Force Chart.js text color for Dark Mode
+    Chart.defaults.color = '#94a3b8';
+    Chart.defaults.borderColor = '#334155';
+
     function switchTab(tabId) {
         document.querySelectorAll('.section').forEach(el => el.classList.remove('active'));
         document.getElementById(tabId).classList.add('active');
@@ -374,7 +369,6 @@ HTML_TEMPLATE = """
         document.getElementById('last-update').innerText = data.last_updated;
         document.getElementById('alert-msg').innerText = data.aqi > 100 ? "Warning: Poor air quality detected." : "Air quality is good.";
 
-        // METRICS BARS
         const mContainer = document.getElementById('metric-container');
         mContainer.innerHTML = '';
         const items = [
@@ -394,7 +388,6 @@ HTML_TEMPLATE = """
             </div>`;
         });
 
-        // RISKS
         const rContainer = document.getElementById('risk-container');
         if(data.health_risks.length > 0) {
             rContainer.innerHTML = '';
@@ -407,7 +400,6 @@ HTML_TEMPLATE = """
             });
         }
 
-        // HISTORY
         if(data.history && data.history.length > 0) {
             const hContainer = document.getElementById('history-container');
             hContainer.innerHTML = '';
@@ -423,7 +415,6 @@ HTML_TEMPLATE = """
             });
         }
 
-        // CHART
         if(data.chart_data.aqi.length > 0) {
             const ctx = document.getElementById('mainChart').getContext('2d');
             const labels = data.chart_data.gps.map(g => `${Number(g.lat).toFixed(4)}, ${Number(g.lon).toFixed(4)}`);
@@ -452,109 +443,3 @@ HTML_TEMPLATE = """
 </script>
 </body>
 </html>
-"""
-
-# --- BACKEND ROUTES ---
-
-@app.route('/')
-def home(): return render_template_string(HTML_TEMPLATE)
-
-@app.route('/api/data')
-def get_data(): 
-    current_data['history'] = history_log
-    return jsonify(current_data)
-
-@app.route('/upload', methods=['POST'])
-def upload_file():
-    global current_data
-    if 'file' not in request.files: return jsonify({"error": "No file"}), 400
-    file = request.files['file']
-    user_date = request.form.get('date', datetime.now().strftime('%Y-%m-%d'))
-
-    try:
-        if file.filename.endswith('.csv'): df = pd.read_csv(file)
-        elif file.filename.endswith(('.xlsx', '.xls')): df = pd.read_excel(file)
-        else: return jsonify({"error": "Invalid file"}), 400
-
-        df = normalize_columns(df)
-        all_cols = ['pm1','pm25','pm10','temp','hum','lat','lon']
-        for c in all_cols: 
-            if c not in df.columns: df[c] = 0
-
-        val = {k: round(df[k].mean(), 1) for k in all_cols}
-        aqi = int((val['pm25']*2) + (val['pm10']*0.5))
-        
-        valid_gps = df[(df['lat'] != 0) & (df['lon'] != 0)]
-        loc_name = get_city_name(valid_gps.iloc[0]['lat'], valid_gps.iloc[0]['lon']) if not valid_gps.empty else "No GPS Data"
-
-        gps_list = []
-        aqi_list = []
-        for i, r in df.head(50).iterrows():
-            row_aqi = int((r['pm25']*2) + (r['pm10']*0.5))
-            aqi_list.append(row_aqi)
-            gps_list.append({
-                "lat": r['lat'], "lon": r['lon'],
-                "city": get_city_name(r['lat'], r['lon']) if i % 5 == 0 else loc_name
-            })
-
-        history_entry = {
-            "date": user_date,
-            "filename": file.filename,
-            "location": loc_name,
-            "aqi": aqi
-        }
-        history_log.append(history_entry)
-        history_log.sort(key=lambda x: x['date'], reverse=True)
-
-        current_data.update({
-            "aqi": aqi, **val, "status": "Updated",
-            "location_name": loc_name,
-            "health_risks": calculate_advanced_health(val),
-            "chart_data": {"aqi": aqi_list, "gps": gps_list},
-            "last_updated": datetime.now().strftime("%H:%M:%S"),
-            "connection_status": "Connected"
-        })
-        return jsonify({"message": "Success", "data": current_data})
-    except Exception as e: return jsonify({"error": str(e)}), 500
-
-@app.route('/api/upload_sensor', methods=['POST'])
-def receive_sensor():
-    global current_data
-    try:
-        data = request.json
-        current_data.update(data)
-        
-        aqi = int((data.get('pm25',0)*2) + (data.get('pm10',0)*0.5))
-        current_data['aqi'] = aqi
-        current_data['health_risks'] = calculate_advanced_health(current_data)
-        current_data['location_name'] = get_city_name(data.get('lat',0), data.get('lon',0))
-        current_data['last_updated'] = datetime.now().strftime("%H:%M:%S")
-
-        current_data['chart_data']['aqi'].append(aqi)
-        if len(current_data['chart_data']['aqi']) > 50: current_data['chart_data']['aqi'].pop(0)
-        
-        current_data['chart_data']['gps'].append({
-            "lat": data.get('lat',0), "lon": data.get('lon',0),
-            "city": current_data['location_name']
-        })
-        if len(current_data['chart_data']['gps']) > 50: current_data['chart_data']['gps'].pop(0)
-
-        current_data['esp32_log'].append(f"> [REC] AQI:{aqi} | Loc:{current_data['location_name']}")
-        if len(current_data['esp32_log']) > 20: current_data['esp32_log'].pop(0)
-        
-        return jsonify({"status": "success"})
-    except Exception as e: return jsonify({"error": str(e)}), 400
-
-@app.route('/export')
-def export_report():
-    output = io.StringIO()
-    output.write(f"Report Date,{datetime.now()}\nLocation,{current_data['location_name']}\nAQI,{current_data['aqi']}\n\n")
-    for k in ['pm1','pm25','pm10','temp','hum','press','gas','alt']:
-        output.write(f"{k},{current_data.get(k,0)}\n")
-    mem = io.BytesIO()
-    mem.write(output.getvalue().encode('utf-8'))
-    mem.seek(0)
-    return send_file(mem, as_attachment=True, download_name="SkySense_Report.csv", mimetype="text/csv")
-
-if __name__ == '__main__':
-    app.run(debug=True)
