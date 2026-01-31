@@ -5,10 +5,10 @@ import re
 import random
 from datetime import datetime
 
-# Try to import geopy for City Names (Fallback if missing)
+# Geopy for City Names
 try:
     from geopy.geocoders import Nominatim
-    geolocator = Nominatim(user_agent="skysense_app_v2")
+    geolocator = Nominatim(user_agent="skysense_app_v5")
 except ImportError:
     geolocator = None
 
@@ -18,23 +18,40 @@ app = Flask(__name__)
 current_data = {
     "aqi": 0, "pm25": 0, "pm10": 0, "no2": 0, "so2": 0, "co": 0,
     "status": "Waiting...",
-    "location_name": "Unknown Location",
+    "location_name": "Waiting for GPS...",
     "health_risks": [],
     "chart_data": {"pm25":[], "pm10":[], "gps":[]},
-    "esp32_log": [],
+    "esp32_log": ["> System Initialized...", "> Waiting for Drone Handshake..."],
     "last_updated": "Never",
-    "connection_status": "Disconnected"
+    "connection_status": "Listening"
 }
 
-# --- HELPER: GPS TO CITY NAME ---
+# --- SMART COLUMN FINDER ---
+def normalize_columns(df):
+    """Finds lat/lon columns regardless of exact name."""
+    col_map = {}
+    for col in df.columns:
+        c_lower = col.lower().strip()
+        # Map PM2.5 variations
+        if 'pm2.5' in c_lower or 'pm25' in c_lower: col_map[col] = 'pm25'
+        elif 'pm10' in c_lower: col_map[col] = 'pm10'
+        elif 'no2' in c_lower: col_map[col] = 'no2'
+        elif 'so2' in c_lower: col_map[col] = 'so2'
+        elif 'co' in c_lower and 'count' not in c_lower: col_map[col] = 'co'
+        # Map GPS variations
+        elif 'lat' in c_lower: col_map[col] = 'lat'
+        elif 'lon' in c_lower or 'lng' in c_lower: col_map[col] = 'lon'
+    
+    return df.rename(columns=col_map)
+
+# --- HELPER: GPS TO CITY ---
 def get_city_name(lat, lon):
-    if not geolocator: return "Location Svc Unavailable"
+    if not geolocator or lat == 0: return "Unknown Area"
     try:
-        # Simple caching could go here, but for now we call direct
         location = geolocator.reverse(f"{lat}, {lon}", exactly_one=True, language='en')
         if location:
-            address = location.raw.get('address', {})
-            return address.get('suburb') or address.get('city') or address.get('town') or "Unknown Area"
+            add = location.raw.get('address', {})
+            return add.get('suburb') or add.get('city') or add.get('town') or add.get('county') or "Unknown Area"
     except:
         return "Unknown Area"
     return "Unknown Area"
@@ -73,7 +90,6 @@ HTML_TEMPLATE = """
     <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap" rel="stylesheet">
     <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.4.0/css/all.min.css">
     <script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
-    <script src="https://cdn.jsdelivr.net/npm/chartjs-adapter-date-fns"></script>
     <style>
         :root { --primary: #3b82f6; --bg: #f8fafc; --card: #ffffff; --text: #1f2937; --border: #e5e7eb; }
         * { box-sizing: border-box; margin: 0; padding: 0; }
@@ -111,14 +127,14 @@ HTML_TEMPLATE = """
         .stat-val { font-size: 1.5rem; font-weight: 700; color: #2563eb; }
         .risk-row { display: flex; justify-content: space-between; padding: 12px 0; border-bottom: 1px solid var(--border); font-size: 0.95rem; }
 
-        /* ESP32 STYLES */
-        .esp-header { display: flex; justify-content: space-between; align-items: center; margin-bottom: 20px; }
-        .status-badge { background: #f3f4f6; color: #6b7280; padding: 6px 12px; border-radius: 20px; font-size: 0.85rem; font-weight: 600; }
-        .status-badge.connected { background: #dcfce7; color: #166534; }
-        .connect-btn { background: #111827; color: white; border: none; padding: 10px 20px; border-radius: 8px; font-weight: 600; cursor: pointer; display: flex; align-items: center; gap: 8px; }
-        .setup-box { background: #eff6ff; border: 1px solid #dbeafe; border-radius: 8px; padding: 20px; margin-top: 20px; }
-        .setup-list { margin: 10px 0 0 20px; color: #4b5563; font-size: 0.9rem; line-height: 1.8; }
-        .code-snippet { background: #fff; padding: 2px 6px; border-radius: 4px; border: 1px solid #e5e7eb; font-family: monospace; color: #d946ef; font-size: 0.85rem; }
+        /* ESP32 DARK THEME CARDS */
+        .esp-dark-card { background: #111827; color: white; border-radius: 16px; padding: 25px; height: 100%; border: 1px solid #374151; }
+        .esp-dark-card h3 { color: white; display: flex; gap: 10px; align-items: center; margin-bottom: 20px; }
+        .console-dark { background: #1f2937; color: #4ade80; padding: 20px; border-radius: 8px; font-family: monospace; height: 200px; overflow-y: auto; font-size: 0.9rem; border: 1px solid #374151; }
+        .param-row { display: flex; margin-bottom: 10px; font-size: 0.95rem; }
+        .param-label { width: 100px; font-weight: 600; color: #9ca3af; }
+        .param-val { color: white; }
+        .status-dot { height: 10px; width: 10px; background-color: #4ade80; border-radius: 50%; display: inline-block; margin-right: 5px; }
 
         .upload-zone { border: 2px dashed #d1d5db; padding: 50px; text-align: center; border-radius: 12px; cursor: pointer; background: #f9fafb; transition: 0.2s; }
         .upload-zone:hover { border-color: #3b82f6; background: #eff6ff; }
@@ -146,7 +162,8 @@ HTML_TEMPLATE = """
     <div class="tabs">
         <button class="tab-btn active" onclick="switchTab('overview')">Overview</button>
         <button class="tab-btn" onclick="switchTab('charts')">GPS Charts</button>
-        <button class="tab-btn" onclick="switchTab('trends')">Historical Trends</button> <button class="tab-btn" onclick="switchTab('disease')">Disease Reports</button>
+        <button class="tab-btn" onclick="switchTab('trends')">Historical Trends</button>
+        <button class="tab-btn" onclick="switchTab('disease')">Disease Reports</button>
         <button class="tab-btn" onclick="switchTab('esp32')">ESP32</button>
         <button class="tab-btn" onclick="switchTab('upload')">Upload</button>
         <button class="tab-btn" onclick="switchTab('export')">Export</button>
@@ -157,12 +174,11 @@ HTML_TEMPLATE = """
             <div class="card">
                 <h3>Air Quality Index</h3>
                 <div class="aqi-num" id="aqi-val">--</div>
-                <div style="text-align:center; color:#6b7280; font-size:0.9rem; margin-bottom:30px;">
+                <div style="text-align:center; color:#6b7280; font-size:0.9rem; margin-bottom:15px;">
                     <i class="fa-solid fa-location-dot"></i> <span id="location-name">Unknown Location</span>
                 </div>
                 <h3>Pollutant Levels</h3>
                 <div id="pollutant-bars"></div>
-                <div style="font-size:0.8rem; color:#9ca3af; margin-top:20px;">Last updated: <span id="last-update">--</span></div>
             </div>
             <div class="card">
                 <h3>Quick Health Summary</h3>
@@ -187,14 +203,11 @@ HTML_TEMPLATE = """
     <div id="trends" class="section">
         <div class="card">
             <h3><i class="fa-solid fa-chart-line"></i> Historical Trend Analysis</h3>
-            <p style="color:#6b7280; margin-bottom:20px;">Upload long-term data (CSV with Year/Date) to visualize trends.</p>
-            
-            <label class="upload-zone" style="padding: 30px; margin-bottom: 20px;">
-                <i class="fa-solid fa-calendar-days" style="font-size: 2rem; color: #9ca3af; margin-bottom:10px;"></i>
+            <label class="upload-zone" style="padding: 20px; margin-bottom: 20px;">
+                <i class="fa-solid fa-calendar-days" style="font-size: 1.5rem; color: #9ca3af; margin-bottom:10px;"></i>
                 <div style="font-weight:600;">Upload Historical CSV</div>
                 <input type="file" id="historyInput" style="display:none;">
             </label>
-
             <div style="height:400px;"><canvas id="trendChart"></canvas></div>
         </div>
     </div>
@@ -206,21 +219,28 @@ HTML_TEMPLATE = """
     </div>
 
     <div id="esp32" class="section">
-        <div class="card">
-            <div class="esp-header">
-                <h3><i class="fa-solid fa-wifi"></i> ESP32 Connection</h3>
-                <div class="status-badge" id="conn-status">Disconnected</div>
-            </div>
-            <button class="connect-btn" onclick="simulateConnect()"><i class="fa-solid fa-wifi"></i> Connect</button>
-            <div class="setup-box">
-                <div style="font-weight:600; color:#1e40af; display:flex; align-items:center; gap:8px;">
-                    <i class="fa-solid fa-bolt"></i> ESP32 Setup:
+        <div class="grid-2">
+            <div class="esp-dark-card">
+                <h3><i class="fa-solid fa-satellite-dish"></i> Connection Status</h3>
+                <div style="margin-top:20px;">
+                    <div class="param-row"><span class="param-label">Protocol:</span><span class="param-val">HTTP / JSON</span></div>
+                    <div class="param-row"><span class="param-label">Endpoint:</span><span class="param-val" style="background:#374151; padding:2px 6px; border-radius:4px;">/api/upload_sensor</span></div>
+                    <div class="param-row"><span class="param-label">Status:</span><span class="param-val" style="color:#4ade80;"><span class="status-dot"></span>Listening</span></div>
                 </div>
-                <ol class="setup-list">
-                    <li>Connect ESP32 to WiFi.</li>
-                    <li>Endpoint: <code>/api/upload_sensor</code></li>
-                    <li>JSON: <code>{"pm25":25.5, "lat":17.38, "lon":78.48}</code></li>
-                </ol>
+                <div style="margin-top:40px; border-top:1px solid #374151; padding-top:20px;">
+                    <p style="color:#9ca3af; font-size:0.8rem; margin-bottom:10px;">Quick Setup:</p>
+                    <code style="background:#1f2937; color:#d1d5db; display:block; padding:10px; border-radius:6px; font-size:0.8rem;">
+                        WiFi.begin("SSID", "PASS");<br>
+                        http.begin(".../api/upload_sensor");
+                    </code>
+                </div>
+            </div>
+
+            <div class="esp-dark-card">
+                <h3><i class="fa-solid fa-rocket"></i> Live Telemetry</h3>
+                <div class="console-dark" id="esp-console">
+                    > System Initialized...
+                </div>
             </div>
         </div>
     </div>
@@ -247,7 +267,7 @@ HTML_TEMPLATE = """
         </div>
     </div>
 
-    <div class="footer">Made by SkySense Team | v4.0</div>
+    <div class="footer">Made by SkySense Team | v5.0 Gold</div>
 </div>
 
 <script>
@@ -258,19 +278,13 @@ HTML_TEMPLATE = """
         document.querySelector(`button[onclick="switchTab('${tabId}')"]`).classList.add('active');
     }
 
-    function simulateConnect() {
-        const badge = document.getElementById('conn-status');
-        badge.innerText = "Listening...";
-        setTimeout(() => { badge.innerText = "Connected"; badge.classList.add('connected'); }, 1500);
-    }
-
     setInterval(() => { fetch('/api/data').then(res => res.json()).then(data => updateUI(data)); }, 3000);
 
-    // --- MAIN UPLOAD ---
+    // MAIN UPLOAD
     document.getElementById('fileInput').addEventListener('change', async (e) => {
         const file = e.target.files[0];
         if(!file) return;
-        const txt = document.getElementById('upload-text'); txt.innerText = "Uploading...";
+        const txt = document.getElementById('upload-text'); txt.innerText = "Processing...";
         const fd = new FormData(); fd.append('file', file);
         try {
             const res = await fetch('/upload', { method: 'POST', body: fd });
@@ -280,7 +294,7 @@ HTML_TEMPLATE = """
         } catch(e) { alert(e); }
     });
 
-    // --- HISTORICAL UPLOAD ---
+    // HISTORICAL UPLOAD
     let trendChart = null;
     document.getElementById('historyInput').addEventListener('change', async (e) => {
         const file = e.target.files[0];
@@ -291,7 +305,7 @@ HTML_TEMPLATE = """
             const d = await res.json();
             if(d.error) alert(d.error);
             else { renderTrendChart(d.labels, d.values); }
-        } catch(e) { alert("Error uploading history: " + e); }
+        } catch(e) { alert("Error: " + e); }
     });
 
     function renderTrendChart(labels, values) {
@@ -299,36 +313,20 @@ HTML_TEMPLATE = """
         if(trendChart) trendChart.destroy();
         trendChart = new Chart(ctx, {
             type: 'line',
-            data: {
-                labels: labels,
-                datasets: [{
-                    label: 'Historical AQI Trend',
-                    data: values,
-                    borderColor: '#3b82f6',
-                    backgroundColor: 'rgba(59, 130, 246, 0.1)',
-                    fill: true,
-                    tension: 0.4
-                }]
-            },
+            data: { labels: labels, datasets: [{ label: 'Historical AQI', data: values, borderColor: '#3b82f6', fill: true, tension: 0.4 }] },
             options: { responsive: true, maintainAspectRatio: false }
         });
     }
 
     let mainChart = null;
-
     function updateUI(data) {
         // OVERVIEW
         document.getElementById('aqi-val').innerText = data.aqi;
         document.getElementById('aqi-badge').innerText = `AQI ${data.aqi}`;
         document.getElementById('aqi-score-box').innerText = data.aqi;
         document.getElementById('risk-count').innerText = data.health_risks.length;
-        document.getElementById('last-update').innerText = data.last_updated;
-        document.getElementById('location-name').innerText = data.location_name; // CITY NAME HERE
-        
-        if(data.connection_status === 'Connected') {
-            document.getElementById('conn-status').innerText = 'Connected';
-            document.getElementById('conn-status').classList.add('connected');
-        }
+        document.getElementById('location-name').innerText = data.location_name;
+        document.getElementById('alert-msg').innerText = data.aqi > 100 ? "Unhealthy conditions detected." : "Air quality is acceptable.";
 
         const pContainer = document.getElementById('pollutant-bars'); pContainer.innerHTML = '';
         ['pm25','pm10','no2','so2','co'].forEach(k => {
@@ -338,66 +336,43 @@ HTML_TEMPLATE = """
 
         const qContainer = document.getElementById('quick-risks'); qContainer.innerHTML = '';
         data.health_risks.forEach(r => qContainer.innerHTML += `<div class="risk-row"><span>${r.name}</span><strong>${r.prob}%</strong></div>`);
-
         const recList = document.getElementById('main-recs'); recList.innerHTML = '';
         if(data.health_risks.length > 0) data.health_risks[0].recs.forEach(r => recList.innerHTML += `<li>${r}</li>`);
         else recList.innerHTML = "<li>Safe for outdoor activities.</li>";
 
-        // CHART: GPS + CITY NAME TOOLTIP
+        // CHARTS: GPS BAR GRAPH + CITY TOOLTIP
         if(data.chart_data.pm25.length > 0) {
             const ctx = document.getElementById('mainChart').getContext('2d');
             const colors = data.chart_data.pm25.map(val => val > 100 ? '#ef4444' : val > 50 ? '#eab308' : '#22c55e');
             const labels = data.chart_data.gps.map(g => `${Number(g.lat).toFixed(4)}, ${Number(g.lon).toFixed(4)}`);
-            const cityNames = data.chart_data.gps.map(g => g.city || "Unknown Area");
+            const cities = data.chart_data.gps.map(g => g.city || "Unknown");
 
             if(mainChart) mainChart.destroy();
             mainChart = new Chart(ctx, {
                 type: 'bar',
-                data: {
-                    labels: labels,
-                    datasets: [{
-                        label: 'PM2.5 Level',
-                        data: data.chart_data.pm25,
-                        backgroundColor: colors,
-                        borderRadius: 4
-                    }]
-                },
+                data: { labels: labels, datasets: [{ label: 'PM2.5 Level', data: data.chart_data.pm25, backgroundColor: colors, borderRadius: 4 }] },
                 options: { 
                     responsive: true, maintainAspectRatio: false,
-                    plugins: {
-                        tooltip: {
-                            callbacks: {
-                                label: function(context) {
-                                    let idx = context.dataIndex;
-                                    return `PM2.5: ${context.raw} | Area: ${cityNames[idx]}`;
-                                }
-                            }
-                        }
-                    },
-                    scales: { 
-                        x: { title: {display:true, text:'GPS Coordinates'}, ticks: {maxRotation: 45, minRotation: 45} },
-                        y: { title: {display:true, text:'Concentration (µg/m³)'} }
-                    }
+                    plugins: { tooltip: { callbacks: { label: function(c) { return `PM2.5: ${c.raw} | Area: ${cities[c.dataIndex]}`; } } } },
+                    scales: { x: { title: {display:true, text:'GPS Coordinates'}, ticks: {maxRotation: 45, minRotation: 45} } }
                 }
             });
         }
 
-        // DISEASE CARDS
+        // DISEASE
         const dContainer = document.getElementById('disease-container'); dContainer.innerHTML = '';
         data.health_risks.forEach(r => {
             dContainer.innerHTML += `
-            <div style="background:white; border:1px solid #e5e7eb; border-radius:12px; padding:20px; margin-bottom:20px; border-left:5px solid ${r.level==='High'?'#ef4444':'#3b82f6'}; box-shadow:0 1px 2px rgba(0,0,0,0.05);">
-                <div style="display:flex; justify-content:space-between; margin-bottom:10px;">
-                    <h3 style="margin:0; font-size:1.1rem; color:#1f2937;">${r.name}</h3>
-                    <span style="background:${r.level==='High'?'#fee2e2':'#dbeafe'}; color:${r.level==='High'?'#991b1b':'#1e40af'}; padding:2px 10px; border-radius:12px; font-size:0.8rem; font-weight:600;">${r.level}</span>
-                </div>
-                <div style="font-size:0.9rem; color:#6b7280; margin-bottom:5px;">Risk Probability: <strong>${r.prob}%</strong></div>
+            <div style="background:white; border:1px solid #e5e7eb; border-radius:12px; padding:20px; margin-bottom:20px; border-left:5px solid ${r.level==='High'?'#ef4444':'#3b82f6'};">
+                <div style="display:flex; justify-content:space-between;"><h3>${r.name}</h3><span>${r.level}</span></div>
+                <div style="font-size:0.9rem; color:#6b7280; margin-bottom:5px;">Risk: <strong>${r.prob}%</strong></div>
                 <div style="height:6px; background:#f3f4f6; border-radius:4px; margin-bottom:15px;"><div style="height:100%; width:${r.prob}%; background:${r.level==='High'?'#ef4444':'#3b82f6'}; border-radius:4px;"></div></div>
-                <div style="margin-bottom:15px;">${r.symptoms.map(s => `<span style="display:inline-block; background:#f3f4f6; padding:4px 10px; border-radius:15px; font-size:0.75rem; color:#4b5563; margin-right:5px;">${s}</span>`).join('')}</div>
-                <ul style="font-size:0.9rem; color:#4b5563; padding-left:20px; margin:0;">${r.recs.map(rec => `<li>${rec}</li>`).join('')}</ul>
+                <ul style="font-size:0.9rem; color:#4b5563; padding-left:20px;">${r.recs.map(rec => `<li>${rec}</li>`).join('')}</ul>
             </div>`;
         });
-        
+
+        // ESP32 LOGS
+        document.getElementById('esp-console').innerHTML = data.esp32_log.join('<br>');
         document.getElementById('rep-aqi').innerText = data.aqi;
     }
 </script>
@@ -413,7 +388,7 @@ def home(): return render_template_string(HTML_TEMPLATE)
 @app.route('/api/data')
 def get_data(): return jsonify(current_data)
 
-# --- ROUTE 1: REGULAR UPLOAD ---
+# ROUTE 1: UPLOAD (With Smart Column Mapping)
 @app.route('/upload', methods=['POST'])
 def upload_file():
     global current_data
@@ -424,9 +399,10 @@ def upload_file():
         elif file.filename.endswith(('.xlsx', '.xls')): df = pd.read_excel(file)
         else: return jsonify({"error": "Invalid file"}), 400
 
-        df.columns = [re.sub(r'[^a-z0-9]', '', c.lower()) for c in df.columns]
-        mapper = {'pm25':'pm25', 'pm10':'pm10', 'no2':'no2', 'so2':'so2', 'co':'co', 'lat':'lat', 'lon':'lon'}
-        df = df.rename(columns={c: mapper[c] for c in df.columns if c in mapper})
+        # SMART COLUMN MAPPER
+        df = normalize_columns(df)
+        
+        # Ensure columns exist
         for c in ['pm25','pm10','no2','so2','co']: 
             if c not in df.columns: df[c] = 0
         if 'lat' not in df.columns: df['lat'] = 0.0
@@ -435,92 +411,18 @@ def upload_file():
         val = {k: round(df[k].mean(), 1) for k in ['pm25','pm10','no2','so2','co']}
         aqi = int((val['pm25']*2) + (val['pm10']*0.5))
         
-        # Determine Location (using first/avg point)
-        lat_center = df['lat'].mean()
-        lon_center = df['lon'].mean()
-        loc_name = get_city_name(lat_center, lon_center)
+        # Get City Name from first valid GPS point
+        valid_gps = df[(df['lat'] != 0) & (df['lon'] != 0)]
+        if not valid_gps.empty:
+            loc_name = get_city_name(valid_gps.iloc[0]['lat'], valid_gps.iloc[0]['lon'])
+        else:
+            loc_name = "GPS Not Found in File"
 
-        # Chart Data (Add City Name to each point for tooltip)
+        # Chart Data
         c_data = {k: df[k].head(50).tolist() for k in val.keys()}
         gps_list = []
-        for _, r in df.head(50).iterrows():
+        for i, r in df.head(50).iterrows():
             gps_list.append({
                 "lat": r['lat'], 
                 "lon": r['lon'],
-                "city": get_city_name(r['lat'], r['lon']) if _ % 5 == 0 else loc_name # optimize calls
-            })
-        c_data['gps'] = gps_list
-
-        current_data.update({
-            "aqi": aqi, **val, "status": "Updated",
-            "location_name": loc_name,
-            "health_risks": calculate_advanced_health(val),
-            "chart_data": c_data,
-            "last_updated": datetime.now().strftime("%H:%M:%S"),
-            "connection_status": "Connected"
-        })
-        return jsonify({"message": "Success", "data": current_data})
-    except Exception as e: return jsonify({"error": str(e)}), 500
-
-# --- ROUTE 2: HISTORICAL UPLOAD ---
-@app.route('/upload_history', methods=['POST'])
-def upload_history():
-    if 'file' not in request.files: return jsonify({"error": "No file"}), 400
-    file = request.files['file']
-    try:
-        df = pd.read_csv(file)
-        # Look for date/year/month columns
-        date_col = next((c for c in df.columns if 'date' in c.lower() or 'year' in c.lower() or 'time' in c.lower()), None)
-        val_col = next((c for c in df.columns if 'aqi' in c.lower() or 'pm25' in c.lower()), None)
-        
-        if not date_col or not val_col:
-            return jsonify({"error": "CSV must have 'Date' and 'AQI' columns"}), 400
-            
-        df = df.sort_values(by=date_col)
-        return jsonify({
-            "labels": df[date_col].astype(str).tolist(),
-            "values": df[val_col].tolist()
-        })
-    except Exception as e: return jsonify({"error": str(e)}), 500
-
-# --- ROUTE 3: ESP32 ---
-@app.route('/api/upload_sensor', methods=['POST'])
-def receive_sensor():
-    global current_data
-    try:
-        data = request.json
-        current_data.update(data)
-        current_data['aqi'] = int((data.get('pm25',0)*2) + (data.get('pm10',0)*0.5))
-        current_data['health_risks'] = calculate_advanced_health(current_data)
-        current_data['last_updated'] = datetime.now().strftime("%H:%M:%S")
-        current_data['connection_status'] = "Connected"
-        
-        # Get City Name (Live)
-        current_data['location_name'] = get_city_name(data.get('lat',0), data.get('lon',0))
-
-        # Append Data.
-        for k in ['pm25','pm10','no2','so2','co']:
-            current_data['chart_data'][k].append(data.get(k, 0))
-            if len(current_data['chart_data'][k]) > 50: current_data['chart_data'][k].pop(0)
-        
-        current_data['chart_data']['gps'].append({
-            "lat": data.get('lat',0), "lon": data.get('lon',0),
-            "city": current_data['location_name']
-        })
-        if len(current_data['chart_data']['gps']) > 50: current_data['chart_data']['gps'].pop(0)
-
-        return jsonify({"status": "success"})
-    except Exception as e: return jsonify({"error": str(e)}), 400
-
-@app.route('/export')
-def export_report():
-    output = io.StringIO()
-    output.write(f"Report Date,{datetime.now()}\nLocation,{current_data['location_name']}\nAQI,{current_data['aqi']}\n\nPollutant,Value\n")
-    for k in ['pm25','pm10','no2','so2','co']: output.write(f"{k},{current_data[k]}\n")
-    mem = io.BytesIO()
-    mem.write(output.getvalue().encode('utf-8'))
-    mem.seek(0)
-    return send_file(mem, as_attachment=True, download_name="SkySense_Report.csv", mimetype="text/csv")
-
-if __name__ == '__main__':
-    app.run(debug=True)
+                "city": get_city_name(r['lat'], r['lon']) if i % 5 == 0 else loc_name
