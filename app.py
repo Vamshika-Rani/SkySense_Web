@@ -6,14 +6,16 @@ import datetime
 # Safe Import for Geopy
 try:
     from geopy.geocoders import Nominatim
-    geolocator = Nominatim(user_agent="skysense_final_v112")
+    geolocator = Nominatim(user_agent="skysense_final_v113")
 except ImportError:
     geolocator = None
 
 app = Flask(__name__)
 
-# --- GLOBAL DATA ---
+# --- GLOBAL DATA STORE ---
+# Stores history of uploads: [{'date': '...', 'filename': '...', 'status': 'Success'}]
 history_log = [] 
+
 current_data = {
     "aqi": 0, "pm1": 0, "pm25": 0, "pm10": 0, "temp": 0, "hum": 0,
     "avg_aqi": 0, "avg_pm1": 0, "avg_pm25": 0, "avg_pm10": 0, "avg_temp": 0, "avg_hum": 0,
@@ -25,28 +27,18 @@ current_data = {
 
 # --- ROBUST FILE READER ---
 def read_file_safely(file):
-    # Reset pointer to start
     file.seek(0)
+    # 1. Try Standard CSV
+    try: return pd.read_csv(file)
+    except: pass
     
-    # 1. Try Reading as CSV
-    try:
-        return pd.read_csv(file)
-    except:
-        pass
-    
-    # 2. Try Reading as Excel
-    try:
-        file.seek(0)
-        return pd.read_excel(file)
-    except:
-        pass
+    # 2. Try Excel
+    try: file.seek(0); return pd.read_excel(file)
+    except: pass
 
-    # 3. Fallback for messy CSVs
-    try:
-        file.seek(0)
-        return pd.read_csv(file, encoding='latin1', sep=None, engine='python')
-    except:
-        raise ValueError("File format not recognized. Please upload a valid CSV or Excel file.")
+    # 3. Fallback CSV (Latin encoding)
+    try: file.seek(0); return pd.read_csv(file, encoding='latin1', sep=None, engine='python')
+    except: raise ValueError("File format not recognized. Please upload a valid CSV or Excel file.")
 
 def normalize_columns(df):
     col_map = {}
@@ -57,7 +49,7 @@ def normalize_columns(df):
         elif 'pm10' in c: col_map[col] = 'pm10'
         elif 'temp' in c: col_map[col] = 'temp'
         elif 'hum' in c: col_map[col] = 'hum'
-        elif 'lat' in c or 'lal' in c: col_map[col] = 'lat' # Fixes 'lalitude'
+        elif 'lat' in c or 'lal' in c: col_map[col] = 'lat'
         elif 'lon' in c or 'lng' in c: col_map[col] = 'lon'
     return df.rename(columns=col_map)
 
@@ -73,7 +65,6 @@ def get_city_name(lat, lon):
 
 def calc_health(val):
     risks = []
-    
     # 1. Fine Particle Toxicity
     pm25_score = min(100, int(val['pm25'] * 1.2))
     risks.append({
@@ -81,9 +72,8 @@ def calc_health(val):
         "desc": "Micro-particles entering bloodstream causing inflammation.",
         "prob": pm25_score,
         "level": "High" if pm25_score > 50 else "Moderate",
-        "recs": ["Wear an N95/N99 mask outdoors", "Run HEPA air purifiers", "Avoid outdoor cardio", "Keep windows sealed"]
+        "recs": ["Wear an N95/N99 mask outdoors", "Run HEPA air purifiers in bedrooms", "Avoid outdoor cardio exercises", "Keep windows sealed during traffic hours"]
     })
-
     # 2. Upper Airway Stress
     airway_score = min(95, int((val['pm10'] * 0.8) + (20 if val['hum'] < 30 else 0)))
     risks.append({
@@ -91,9 +81,8 @@ def calc_health(val):
         "desc": "Irritation of throat and nasal passages due to dust/dryness.",
         "prob": airway_score,
         "level": "High" if airway_score > 60 else "Moderate",
-        "recs": ["Use a humidifier", "Saline nasal rinses", "Drink warm fluids", "Wear protective eyewear"]
+        "recs": ["Use a humidifier indoors", "Saline nasal rinses twice daily", "Drink warm fluids to hydrate mucous", "Wear protective eyewear in dusty zones"]
     })
-
     # 3. Heat Stress
     heat_score = 0
     if val['temp'] > 30: heat_score = min(100, int((val['temp'] - 30) * 10))
@@ -102,56 +91,65 @@ def calc_health(val):
         "desc": "Potential for dehydration and heat exhaustion.",
         "prob": heat_score,
         "level": "High" if heat_score > 40 else "Low",
-        "recs": ["Drink electrolytes", "Wear light clothing", "Avoid sun 12PM-4PM", "Cool showers"]
+        "recs": ["Drink electrolyte-rich fluids hourly", "Wear light cotton clothing", "Avoid sun exposure 12PM-4PM", "Take cool showers to lower temp"]
     })
-
     # 4. Asthma Trigger
     asthma_score = min(100, int((val['pm25'] * 0.9) + (val['pm10'] * 0.4)))
     risks.append({
-        "name": "Asthma Trigger",
+        "name": "Asthma Trigger Warning",
         "desc": "High particulate matter may trigger wheezing.",
         "prob": asthma_score,
         "level": "High" if asthma_score > 50 else "Moderate",
-        "recs": ["Keep inhaler ready", "Stay indoors", "No candles/incense", "Monitor peak flow"]
+        "recs": ["Keep rescue inhaler accessible", "Stay indoors with windows closed", "Avoid candles/incense indoors", "Monitor peak flow regularly"]
     })
     return risks
 
-# --- HTML TEMPLATE (Split to avoid Syntax Errors) ---
+# --- HTML TEMPLATE PARTS ---
+
 HTML_HEAD = """
 <!DOCTYPE html>
 <html lang="en">
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>SkySense | Pro</title>
+    <title>SkySense | Pro Dashboard</title>
     <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800&display=swap" rel="stylesheet">
     <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.4.0/css/all.min.css">
     <link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css" />
     <script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
+"""
+
+HTML_STYLE = """
     <style>
         :root { --bg: #fdfbf7; --card-bg: #ffffff; --text-main: #1c1917; --text-muted: #78716c; --primary: #0f172a; --orange: #ea580c; --danger: #dc2626; --success: #16a34a; --border: #e7e5e4; }
         * { box-sizing: border-box; margin: 0; padding: 0; }
         body { font-family: 'Inter', sans-serif; background: var(--bg); color: var(--text-main); padding: 40px 20px; }
         .container { max-width: 1200px; margin: 0 auto; }
+        
         .header { display: flex; justify-content: space-between; align-items: center; margin-bottom: 30px; }
         .logo { font-size: 1.8rem; font-weight: 800; color: var(--text-main); letter-spacing: -0.5px; display:flex; align-items:center; gap:10px; }
         .refresh-btn { background: #e5e5e5; color: var(--text-main); border: none; padding: 10px 20px; border-radius: 30px; font-weight: 600; cursor: pointer; transition: 0.2s; }
         .alert-banner { background: #fff7ed; border: 1px solid #ffedd5; color: #9a3412; padding: 20px; border-radius: 12px; margin-bottom: 30px; display:flex; align-items:center; gap:15px; }
+        
         .nav-tabs { display: flex; gap: 10px; background: white; padding: 8px; border-radius: 50px; margin-bottom: 30px; border: 1px solid var(--border); width: fit-content; box-shadow: 0 2px 5px rgba(0,0,0,0.05); }
         .tab-btn { border: none; background: transparent; padding: 10px 24px; font-weight: 600; color: var(--text-muted); cursor: pointer; border-radius: 30px; transition: 0.2s; font-size: 0.9rem; }
         .tab-btn.active { background: var(--primary); color: white; }
+        
         .section { display: none; animation: fadeIn 0.3s ease; }
         .section.active { display: block; }
         @keyframes fadeIn { from { opacity: 0; transform: translateY(5px); } to { opacity: 1; transform: translateY(0); } }
+        
         .dashboard-grid { display: grid; grid-template-columns: 1.2fr 1fr; gap: 25px; }
         .card { background: var(--card-bg); border-radius: 20px; padding: 30px; box-shadow: 0 4px 6px -1px rgba(0,0,0,0.02); border: 1px solid var(--border); height: 100%; }
         .card-header { display: flex; justify-content: space-between; align-items: center; margin-bottom: 25px; }
         .card-title { font-size: 1.1rem; font-weight: 700; color: var(--text-main); }
+        
         .aqi-num { font-size: 5rem; font-weight: 800; color: var(--danger); line-height: 1; text-align: center; }
         .aqi-sub { text-align: center; color: var(--text-muted); margin-top: 10px; font-weight: 500; }
         .stat-row { display: flex; gap: 15px; margin-top: 30px; }
         .stat-box { flex: 1; background: #fafaf9; padding: 15px; border-radius: 12px; text-align: center; }
         .stat-val { font-size: 1.5rem; font-weight: 800; color: var(--text-main); }
+        
         .health-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 20px; }
         @media(max-width: 800px) { .health-grid { grid-template-columns: 1fr; } }
         .risk-card { background: white; border: 1px solid var(--border); border-radius: 16px; padding: 25px; border-left: 5px solid var(--danger); }
@@ -167,7 +165,6 @@ HTML_HEAD = """
         .rec-list li { margin-bottom: 5px; position: relative; padding-left: 15px; }
         .rec-list li::before { content: "•"; color: var(--primary); font-weight: bold; position: absolute; left: 0; }
         
-        /* UPDATED CLEAN UPLOAD CARD */
         .upload-card { display:block; text-align:center; padding: 40px; border: 2px dashed #d6d3d1; border-radius: 20px; background: #fafaf9; cursor: pointer; transition: 0.2s; }
         .upload-card:hover { border-color: var(--primary); background: #f0fdf4; }
         .upload-icon { font-size: 3rem; color: #d6d3d1; margin-bottom: 15px; transition:0.2s; }
@@ -175,8 +172,25 @@ HTML_HEAD = """
         .date-picker { width:100%; padding:15px; border:1px solid #e7e5e4; border-radius:12px; font-size:1rem; margin-bottom:20px; font-family:'Inter',sans-serif; }
         
         #map-container { height: 450px; width: 100%; border-radius: 16px; z-index: 1; }
+        
         .btn-primary { display:inline-block; background:#0f172a; color:white; padding:12px 25px; border-radius:8px; text-decoration:none; margin-right:10px; border:none; cursor:pointer; font-weight:600; font-size:0.9rem; }
         .btn-outline { display:inline-block; background:transparent; color:#0f172a; padding:12px 25px; border-radius:8px; text-decoration:none; border:2px solid #0f172a; font-weight:600; font-size:0.9rem; cursor:pointer; }
+        
+        /* HISTORY TABLE */
+        .history-table { width: 100%; border-collapse: collapse; margin-top: 15px; }
+        .history-table th { text-align: left; padding: 12px; border-bottom: 2px solid #e7e5e4; color: var(--text-muted); font-size: 0.85rem; text-transform: uppercase; }
+        .history-table td { padding: 15px 12px; border-bottom: 1px solid #e7e5e4; color: var(--text-main); font-size: 0.95rem; }
+        .history-table tr:last-child td { border-bottom: none; }
+        .status-badge { padding: 4px 10px; border-radius: 20px; font-size: 0.75rem; font-weight: 700; background: #dcfce7; color: #166534; }
+
+        /* PRINT STYLES FOR PDF EXPORT */
+        @media print {
+            .nav-tabs, .header button, .upload-card, .btn-primary, .btn-outline, #esp32, #upload, #export { display: none !important; }
+            .header, .alert-banner, .section { width: 100%; margin: 0; padding: 0; box-shadow: none; }
+            body { background: white; padding: 0; }
+            .card { border: 1px solid #ccc; box-shadow: none; margin-bottom: 20px; break-inside: avoid; }
+            .container { max-width: 100%; }
+        }
     </style>
 </head>
 """
@@ -199,6 +213,7 @@ HTML_BODY = """
         <button class="tab-btn" onclick="sw('gps')">GPS Charts</button>
         <button class="tab-btn" onclick="sw('heatmap')">Heatmap</button>
         <button class="tab-btn" onclick="sw('disease')">Disease Reports</button>
+        <button class="tab-btn" onclick="sw('history')">History</button>
         <button class="tab-btn" onclick="sw('esp32')">ESP32</button>
         <button class="tab-btn" onclick="sw('upload')">Upload</button>
         <button class="tab-btn" onclick="sw('export')">Export</button>
@@ -246,6 +261,18 @@ HTML_BODY = """
         </div>
     </div>
 
+    <div id="history" class="section">
+        <div class="card">
+            <div class="card-title">Upload History</div>
+            <table class="history-table">
+                <thead><tr><th>Date</th><th>Filename</th><th>Status</th></tr></thead>
+                <tbody id="history-body">
+                    <tr><td colspan="3" style="text-align:center; color:#78716c;">No files uploaded yet.</td></tr>
+                </tbody>
+            </table>
+        </div>
+    </div>
+
     <div id="esp32" class="section">
         <div class="card">
             <div class="card-title">Live Telemetry</div>
@@ -275,13 +302,15 @@ HTML_BODY = """
                 Download the complete dataset with calculated averages, health risks, and precautionary measures.
             </p>
             <div style="display:flex; gap:10px;">
-                <a href="/export/text" class="btn-primary"><i class="fa-solid fa-file-lines"></i> Download Text Report</a>
-                <button onclick="window.print()" class="btn-outline"><i class="fa-solid fa-print"></i> Print / Save as PDF</button>
+                <a href="/export/text" class="btn-primary"><i class="fa-solid fa-file-lines"></i> Export as Text File</a>
+                <button onclick="window.print()" class="btn-outline"><i class="fa-solid fa-file-pdf"></i> Export as PDF</button>
             </div>
         </div>
     </div>
 </div>
+"""
 
+HTML_SCRIPT = """
 <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
 <script src="https://cdnjs.cloudflare.com/ajax/libs/leaflet.heat/0.2.0/leaflet-heat.js"></script>
 
@@ -311,7 +340,7 @@ HTML_BODY = """
             const d = await res.json();
             if(d.error) { alert("Server Error: " + d.error); txt.innerText = "Upload Failed"; } 
             else { txt.innerText = "Success!"; updateUI(d.data); setTimeout(()=>sw('overview'), 500); }
-        } catch(e) { alert("Upload Failed. Ensure file is CSV/Excel."); txt.innerText = "Retry"; }
+        } catch(e) { alert("Upload Failed."); txt.innerText = "Retry"; }
     });
 
     function initMap() {
@@ -328,40 +357,40 @@ HTML_BODY = """
         document.getElementById('loc-name').innerText = data.location_name;
         document.getElementById('alert-msg').innerText = data.aqi > 100 ? "Poor Air Quality Detected" : "Air Quality is Safe";
 
+        // HEALTH REPORTS
         const grid = document.getElementById('full-health-grid');
         const miniList = document.getElementById('mini-risk-list');
-        
         if(data.health_risks.length > 0) {
-            grid.innerHTML = '';
-            miniList.innerHTML = '';
-            
+            grid.innerHTML = ''; miniList.innerHTML = '';
             data.health_risks.forEach(r => {
                 const color = r.level === 'High' ? '#dc2626' : '#ea580c';
                 const badgeColor = r.level === 'High' ? '#fee2e2' : '#ffedd5';
                 const badgeText = r.level === 'High' ? '#991b1b' : '#9a3412';
-                
-                grid.innerHTML += `
-                <div class="risk-card" style="border-left-color:${color}">
+                grid.innerHTML += `<div class="risk-card" style="border-left-color:${color}">
                     <div class="risk-header"><div class="risk-title">${r.name}</div><div class="risk-badge" style="background:${badgeColor}; color:${badgeText}">${r.level} (${r.prob}%)</div></div>
                     <div class="risk-desc">${r.desc}</div>
                     <div class="progress-bg"><div class="progress-fill" style="width:${r.prob}%; background:${color}"></div></div>
-                    <div class="rec-box"><div class="rec-title">RECOMMENDATIONS</div><ul class="rec-list">${r.recs.map(x => `<li>${x}</li>`).join('')}</ul></div>
-                </div>`;
-
-                miniList.innerHTML += `
-                <div style="display:flex; justify-content:space-between; padding:10px 0; border-bottom:1px solid #f5f5f4;">
-                    <span style="font-weight:600;">${r.name}</span><span style="font-weight:700; color:${color}">${r.level}</span>
-                </div>`;
+                    <div class="rec-box"><div class="rec-title">RECOMMENDATIONS</div><ul class="rec-list">${r.recs.map(x => `<li>${x}</li>`).join('')}</ul></div></div>`;
+                miniList.innerHTML += `<div style="display:flex; justify-content:space-between; padding:10px 0; border-bottom:1px solid #f5f5f4;"><span style="font-weight:600;">${r.name}</span><span style="font-weight:700; color:${color}">${r.level}</span></div>`;
             });
         }
 
+        // HISTORY UPDATE
+        const histBody = document.getElementById('history-body');
+        if(data.history && data.history.length > 0) {
+            histBody.innerHTML = '';
+            data.history.forEach(h => {
+                histBody.innerHTML += `<tr><td>${h.date}</td><td>${h.filename}</td><td><span class="status-badge">${h.status}</span></td></tr>`;
+            });
+        }
+
+        // CHART & MAP
         if(data.chart_data.aqi.length > 0) {
             const ctx = document.getElementById('mainChart').getContext('2d');
             const labels = data.chart_data.gps.map(g => `${Number(g.lat).toFixed(3)}, ${Number(g.lon).toFixed(3)}`);
             if(mainChart) mainChart.destroy();
             mainChart = new Chart(ctx, { type: 'bar', data: { labels: labels, datasets: [{ label: 'AQI', data: data.chart_data.aqi, backgroundColor: '#0f172a', borderRadius: 4 }] }, options: { responsive: true, maintainAspectRatio: false } });
         }
-
         if(data.chart_data.gps.length > 0) {
             if(!map) initMap();
             const firstPt = data.chart_data.gps[0];
@@ -370,7 +399,6 @@ HTML_BODY = """
             if(heatLayer) map.removeLayer(heatLayer);
             heatLayer = L.heatLayer(heatPoints, {radius: 35, blur: 20, maxZoom: 15}).addTo(map);
         }
-
         document.getElementById('esp-console').innerHTML = data.esp32_log.join('<br>');
     }
 </script>
@@ -381,7 +409,7 @@ HTML_BODY = """
 # --- BACKEND ROUTES ---
 
 @app.route('/')
-def home(): return render_template_string(HTML_HEAD + HTML_BODY)
+def home(): return render_template_string(HTML_HEAD + HTML_STYLE + HTML_BODY + HTML_SCRIPT)
 
 @app.route('/api/data')
 def get_data(): 
@@ -400,19 +428,17 @@ def upload_file():
         for c in ['pm1','pm25','pm10','temp','hum','lat','lon']: 
             if c not in df.columns: df[c] = 0
         
-        # Calculate Averages for Report
         avgs = {k: round(df[k].mean(), 1) for k in ['pm1','pm25','pm10','temp','hum']}
         aqi = int((avgs['pm25']*2) + (avgs['pm10']*0.5))
-        
         valid = df[df['lat']!=0]
         loc = get_city_name(valid.iloc[0]['lat'], valid.iloc[0]['lon']) if not valid.empty else "No GPS"
-        
         gps, aqis = [], []
         for i, r in df.head(50).iterrows():
             aqis.append(int((r['pm25']*2)+(r['pm10']*0.5)))
             gps.append({"lat":r['lat'], "lon":r['lon']})
             
-        history_log.insert(0, {"date":dt, "filename":f.filename, "aqi":aqi})
+        # Update History
+        history_log.insert(0, {"date":dt, "filename":f.filename, "status":"Success"})
         
         current_data.update({
             "aqi": aqi, "location_name": loc, 
