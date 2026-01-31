@@ -8,7 +8,7 @@ from datetime import datetime
 # Geopy for City Names
 try:
     from geopy.geocoders import Nominatim
-    geolocator = Nominatim(user_agent="skysense_final_v9")
+    geolocator = Nominatim(user_agent="skysense_final_v9_1")
 except ImportError:
     geolocator = None
 
@@ -22,14 +22,13 @@ current_data = {
     "status": "Waiting...",
     "location_name": "Waiting for Data...",
     "health_risks": [],
-    # Added 'aqi' list for the chart
     "chart_data": {"aqi":[], "gps":[]},
     "esp32_log": ["> System Initialized...", "> Waiting for Data stream..."],
     "last_updated": "Never",
     "connection_status": "Listening"
 }
 
-# --- SMART COLUMN FIXER ---
+# --- SMART COLUMN FIXER (Includes "lalitude" fix) ---
 def normalize_columns(df):
     col_map = {}
     for col in df.columns:
@@ -42,7 +41,8 @@ def normalize_columns(df):
         elif 'press' in c_lower: col_map[col] = 'press'
         elif 'gas' in c_lower: col_map[col] = 'gas'
         elif 'alt' in c_lower: col_map[col] = 'alt'
-        elif 'lat' in c_lower: col_map[col] = 'lat'
+        # Fix for 'lalitude' typo in your CSV
+        elif 'lat' in c_lower or 'lal' in c_lower: col_map[col] = 'lat'
         elif 'lon' in c_lower or 'lng' in c_lower: col_map[col] = 'lon'
     return df.rename(columns=col_map)
 
@@ -50,19 +50,20 @@ def normalize_columns(df):
 def get_city_name(lat, lon):
     if not geolocator or lat == 0: return "Unknown Area"
     try:
+        # Rounding speeds up caching/lookup slightly
         location = geolocator.reverse(f"{lat}, {lon}", exactly_one=True, language='en')
         if location:
             add = location.raw.get('address', {})
-            return add.get('suburb') or add.get('city') or add.get('town') or "Unknown Area"
+            return add.get('suburb') or add.get('city') or add.get('town') or add.get('village') or "Unknown Area"
     except:
         return "Unknown Area"
     return "Unknown Area"
 
-# --- EXPANDED HEALTH ENGINE (5+ Risks) ---
+# --- HEALTH ENGINE ---
 def calculate_advanced_health(val):
     risks = []
     
-    # 1. Fine Particle Toxicity (PM2.5 specific)
+    # 1. Fine Particle Toxicity
     if val['pm25'] > 35:
         risks.append({
             "name": "Fine Particle Toxicity", "prob": min(95, int(val['pm25']*1.5)), "level": "High",
@@ -70,7 +71,7 @@ def calculate_advanced_health(val):
             "recs": ["Use HEPA filter", "Wear N95 mask"]
         })
 
-    # 2. Upper Respiratory Stress (PM10 specific)
+    # 2. Upper Respiratory Stress
     if val['pm10'] > 50:
         risks.append({
             "name": "Upper Airway Stress", "prob": min(90, int(val['pm10'])), "level": "Moderate",
@@ -78,35 +79,23 @@ def calculate_advanced_health(val):
             "recs": ["Drink water", "Avoid dusty areas"]
         })
 
-    # 3. Heat Stress (Temp)
+    # 3. Heat Stress
     if val['temp'] > 30:
         risks.append({
             "name": "Heat Stress Risk", "prob": min(100, int((val['temp']-30)*10)), "level": "High",
             "symptoms": ["Dehydration", "Fatigue"],
             "recs": ["Hydrate frequently", "Seek shade"]
         })
-    elif val['temp'] < 10:
-        risks.append({
-            "name": "Hypothermia Risk", "prob": 40, "level": "Moderate",
-            "symptoms": ["Shivering", "Numbness"],
-            "recs": ["Wear thermal clothing"]
-        })
 
-    # 4. Viral Spread / Comfort (Humidity)
+    # 4. Viral Spread
     if val['hum'] < 40:
         risks.append({
             "name": "Viral Transmission", "prob": 65, "level": "Moderate",
             "symptoms": ["Dry mucous membranes", "Flu susceptibility"],
             "recs": ["Use humidifier", "Moisturize skin"]
         })
-    elif val['hum'] > 70:
-        risks.append({
-            "name": "Mold & Bacteria Growth", "prob": 70, "level": "High",
-            "symptoms": ["Allergic reactions", "Congestion"],
-            "recs": ["Use dehumidifier", "Ventilate area"]
-        })
 
-    # 5. General Asthma (Combined)
+    # 5. Asthma
     asthma_score = (val['pm25'] + val['pm10']) / 2
     if asthma_score > 40:
         risks.append({
@@ -115,7 +104,6 @@ def calculate_advanced_health(val):
             "recs": ["Keep rescue inhaler ready", "Stay indoors"]
         })
 
-    # Fallback if air is clean
     if not risks:
         risks.append({"name": "Optimal Conditions", "prob": 5, "level": "Safe", "symptoms": ["None"], "recs": ["Enjoy outdoor activities"]})
 
@@ -142,8 +130,8 @@ HTML_TEMPLATE = """
         .refresh-btn { background: #111827; color: white; border: none; padding: 8px 16px; border-radius: 6px; cursor: pointer; }
         .alert-banner { background: #fffbeb; border: 1px solid #fcd34d; color: #92400e; padding: 20px; border-radius: 12px; margin-bottom: 25px; }
         
-        .tabs { display: flex; gap: 5px; background: white; padding: 5px; border-radius: 12px; margin-bottom: 25px; }
-        .tab-btn { flex: 1; border: none; background: transparent; padding: 12px; font-weight: 600; color: #6b7280; cursor: pointer; border-radius: 8px; transition: 0.2s; }
+        .tabs { display: flex; gap: 5px; background: white; padding: 5px; border-radius: 12px; margin-bottom: 25px; overflow-x: auto; }
+        .tab-btn { flex: 1; border: none; background: transparent; padding: 12px; font-weight: 600; color: #6b7280; cursor: pointer; border-radius: 8px; transition: 0.2s; white-space: nowrap; }
         .tab-btn.active { background: #fff; color: #2563eb; box-shadow: 0 2px 4px rgba(0,0,0,0.05); }
         .section { display: none; }
         .section.active { display: block; }
@@ -153,7 +141,6 @@ HTML_TEMPLATE = """
         .card { background: var(--card); border-radius: 16px; padding: 25px; border: 1px solid var(--border); box-shadow: 0 1px 2px rgba(0,0,0,0.05); }
         .aqi-num { font-size: 6rem; font-weight: 800; color: #ea580c; line-height: 1; text-align: center; margin-bottom: 5px; }
         
-        /* 5-ITEM METRIC GRID */
         .metric-grid { display: grid; grid-template-columns: repeat(3, 1fr); gap: 15px; margin-top: 30px; }
         .metric-box { background: #f3f4f6; padding: 15px; border-radius: 12px; text-align: center; }
         .metric-val { font-weight: 700; color: #111827; font-size: 1.2rem; }
@@ -216,8 +203,8 @@ HTML_TEMPLATE = """
 
     <div id="charts" class="section">
         <div class="card">
-            <h3>AQI Level vs Flight Path</h3>
-            <p style="color:#6b7280; font-size:0.9rem; margin-bottom:15px;">Air Quality Index mapped to GPS Coordinates</p>
+            <h3>AQI Level vs GPS Location</h3>
+            <p style="color:#6b7280; font-size:0.9rem; margin-bottom:15px;">X-Axis shows Latitude & Longitude | Tooltip shows City</p>
             <div style="height:400px;"><canvas id="mainChart"></canvas></div>
         </div>
     </div>
@@ -262,7 +249,7 @@ HTML_TEMPLATE = """
         </div>
     </div>
 
-    <div class="footer">Made by SkySense Team | v9.0</div>
+    <div class="footer">Made by SkySense Team | v9.1</div>
 </div>
 
 <script>
@@ -290,17 +277,14 @@ HTML_TEMPLATE = """
 
     let mainChart = null;
     function updateUI(data) {
-        // OVERVIEW
         document.getElementById('aqi-val').innerText = data.aqi;
         document.getElementById('location-name').innerText = data.location_name;
         document.getElementById('alert-msg').innerText = data.aqi > 100 ? "Warning: Poor Air Quality" : "Air Quality is Good";
 
-        // ONLY 5 METRICS
         ['pm1','pm25','pm10','temp','hum'].forEach(k => {
             if(document.getElementById('val-'+k)) document.getElementById('val-'+k).innerText = data[k];
         });
 
-        // RISKS (Expanded List)
         const qContainer = document.getElementById('quick-risks'); qContainer.innerHTML = '';
         data.health_risks.forEach(r => qContainer.innerHTML += `
             <div style="display:flex; justify-content:space-between; align-items:center; padding:12px 0; border-bottom:1px solid #eee;">
@@ -308,13 +292,13 @@ HTML_TEMPLATE = """
                 <span style="font-size:0.85rem; font-weight:700; color:${r.level==='High'?'#ef4444':'#f59e0b'}">${r.level} (${r.prob}%)</span>
             </div>`);
 
-        // CHART: AQI vs GPS
+        // CHART UPDATE: Shows AQI (Y) vs Lat, Lon (X)
         if(data.chart_data.aqi.length > 0) {
             const ctx = document.getElementById('mainChart').getContext('2d');
-            const labels = data.chart_data.gps.map(g => `${Number(g.lat).toFixed(4)},${Number(g.lon).toFixed(4)}`);
-            const cities = data.chart_data.gps.map(g => g.city || "Unknown");
             
-            // Color logic for AQI bars
+            // X-AXIS: Combined Lat, Lon String
+            const labels = data.chart_data.gps.map(g => `${Number(g.lat).toFixed(4)}, ${Number(g.lon).toFixed(4)}`);
+            const cities = data.chart_data.gps.map(g => g.city || "Unknown");
             const colors = data.chart_data.aqi.map(v => v > 150 ? '#ef4444' : v > 100 ? '#f97316' : v > 50 ? '#eab308' : '#22c55e');
 
             if(mainChart) mainChart.destroy();
@@ -331,16 +315,20 @@ HTML_TEMPLATE = """
                 },
                 options: { 
                     responsive: true, maintainAspectRatio: false,
-                    plugins: { tooltip: { callbacks: { label: function(c) { return `AQI: ${c.raw} | ${cities[c.dataIndex]}`; } } } },
+                    plugins: { 
+                        tooltip: { callbacks: { label: function(c) { return `AQI: ${c.raw} | Area: ${cities[c.dataIndex]}`; } } } 
+                    },
                     scales: { 
-                        x: { title: {display:true, text:'GPS Coordinates'}, ticks: {maxRotation: 45, minRotation: 45} },
+                        x: { 
+                            title: {display:true, text:'GPS Coordinates (Latitude, Longitude)'}, 
+                            ticks: {maxRotation: 45, minRotation: 45} 
+                        },
                         y: { title: {display:true, text:'AQI Value'}, beginAtZero: true }
                     }
                 }
             });
         }
         
-        // DISEASE REPORTS
         const dContainer = document.getElementById('disease-container'); dContainer.innerHTML = '';
         data.health_risks.forEach(r => {
             dContainer.innerHTML += `
@@ -381,22 +369,23 @@ def upload_file():
 
         df = normalize_columns(df)
         
-        # Fill missing columns
+        # Fill missing
         all_cols = ['pm1','pm25','pm10','temp','hum','press','gas','alt','lat','lon']
         for c in all_cols: 
             if c not in df.columns: df[c] = 0
 
-        # Calculate Averages for Display
+        # Calculate Averages
         val = {k: round(df[k].mean(), 1) for k in all_cols}
         aqi = int((val['pm25']*2) + (val['pm10']*0.5))
         
-        # Get City
+        # Location
         valid_gps = df[(df['lat'] != 0) & (df['lon'] != 0)]
         loc_name = get_city_name(valid_gps.iloc[0]['lat'], valid_gps.iloc[0]['lon']) if not valid_gps.empty else "No GPS Data"
 
-        # Prepare Chart Data (AQI vs GPS)
+        # Prepare Chart Data (AQI List + GPS List)
         gps_list = []
         aqi_list = []
+        # Sample every row or every 5th row depending on size
         for i, r in df.head(50).iterrows():
             row_aqi = int((r['pm25']*2) + (r['pm10']*0.5))
             aqi_list.append(row_aqi)
@@ -427,34 +416,4 @@ def receive_sensor():
         current_data['aqi'] = aqi
         current_data['health_risks'] = calculate_advanced_health(current_data)
         current_data['location_name'] = get_city_name(data.get('lat',0), data.get('lon',0))
-        current_data['last_updated'] = datetime.now().strftime("%H:%M:%S")
-
-        # Update Chart Arrays
-        current_data['chart_data']['aqi'].append(aqi)
-        if len(current_data['chart_data']['aqi']) > 50: current_data['chart_data']['aqi'].pop(0)
-        
-        current_data['chart_data']['gps'].append({
-            "lat": data.get('lat',0), "lon": data.get('lon',0),
-            "city": current_data['location_name']
-        })
-        if len(current_data['chart_data']['gps']) > 50: current_data['chart_data']['gps'].pop(0)
-
-        current_data['esp32_log'].append(f"> [REC] AQI:{aqi} | T:{data.get('temp')}")
-        if len(current_data['esp32_log']) > 20: current_data['esp32_log'].pop(0)
-        
-        return jsonify({"status": "success"})
-    except Exception as e: return jsonify({"error": str(e)}), 400
-
-@app.route('/export')
-def export_report():
-    output = io.StringIO()
-    output.write(f"Report Date,{datetime.now()}\nLocation,{current_data['location_name']}\nAQI,{current_data['aqi']}\n\n")
-    for k in ['pm1','pm25','pm10','temp','hum','press','gas','alt']:
-        output.write(f"{k},{current_data.get(k,0)}\n")
-    mem = io.BytesIO()
-    mem.write(output.getvalue().encode('utf-8'))
-    mem.seek(0)
-    return send_file(mem, as_attachment=True, download_name="SkySense_Report.csv", mimetype="text/csv")
-
-if __name__ == '__main__':
-    app.run(debug=True)
+        current_data['
