@@ -7,7 +7,7 @@ from datetime import datetime
 # Geopy Setup (Safe Import)
 try:
     from geopy.geocoders import Nominatim
-    geolocator = Nominatim(user_agent="skysense_final_v16")
+    geolocator = Nominatim(user_agent="skysense_final_v17")
 except ImportError:
     geolocator = None
 
@@ -98,7 +98,7 @@ def calculate_advanced_health(val):
     risks.sort(key=lambda x: x['prob'], reverse=True)
     return risks
 
-# --- UI TEMPLATE ---
+# --- UI TEMPLATE (ATOMS LAYOUT) ---
 HTML_TEMPLATE = """
 <!DOCTYPE html>
 <html lang="en">
@@ -236,24 +236,29 @@ HTML_TEMPLATE = """
 
     <div id="overview" class="section active">
         <div class="dashboard-grid">
+            
             <div class="card">
                 <div class="card-header">
                     <div class="card-title">Air Quality Index</div>
                     <span style="background:#dcfce7; color:#166534; padding:4px 10px; border-radius:20px; font-size:0.75rem; font-weight:700;">LIVE MONITOR</span>
                 </div>
+                
                 <div class="aqi-wrapper">
                     <div class="aqi-num" id="aqi-val">--</div>
                     <div class="aqi-label">US AQI Standard</div>
                     <div class="location-pill"><i class="fa-solid fa-location-dot"></i> <span id="location-name">Unknown</span></div>
                 </div>
+
                 <div style="margin-top:30px;">
                     <div class="card-title" style="margin-bottom:15px; font-size:1rem;">Key Pollutants</div>
                     <div id="metric-container"></div>
                 </div>
                 <div style="margin-top:20px; font-size:0.8rem; color:#94a3b8; text-align:center;">Last Update: <span id="last-update">--</span></div>
             </div>
+
             <div class="card">
                 <div class="card-title" style="margin-bottom:20px;">Health Summary</div>
+                
                 <div class="summary-grid">
                     <div class="stat-card">
                         <div class="stat-val" id="aqi-score">--</div>
@@ -264,11 +269,13 @@ HTML_TEMPLATE = """
                         <div class="stat-name">Risks Found</div>
                     </div>
                 </div>
+
                 <div class="card-title" style="margin-bottom:15px; font-size:1rem;">Detected Risks</div>
                 <div id="risk-container">
                     <p style="color:#94a3b8; text-align:center; padding:20px;">Safe Conditions.</p>
                 </div>
             </div>
+
         </div>
     </div>
 
@@ -310,6 +317,7 @@ HTML_TEMPLATE = """
             <div class="card-title" style="margin-bottom:20px;">Upload Data</div>
             <p style="margin-bottom:5px; font-weight:600; font-size:0.9rem; color:var(--text-light);">Select Date</p>
             <input type="date" id="upload-date" class="date-input">
+            
             <label class="upload-area">
                 <i class="fa-solid fa-cloud-arrow-up" style="font-size:2.5rem; color:#cbd5e1; margin-bottom:15px; display:block;"></i>
                 <div id="upload-text" style="font-weight:600; color:#475569;">Click to Browse CSV / Excel</div>
@@ -326,7 +334,7 @@ HTML_TEMPLATE = """
         </div>
     </div>
 
-    <div class="footer">SkySense v16.0 | Atoms Design System</div>
+    <div class="footer">SkySense v17.0 | Atoms Design System</div>
 </div>
 
 <script>
@@ -366,12 +374,13 @@ HTML_TEMPLATE = """
         document.getElementById('last-update').innerText = data.last_updated;
         document.getElementById('alert-msg').innerText = data.aqi > 100 ? "Warning: Poor air quality detected." : "Air quality is good.";
 
+        // METRICS BARS
         const mContainer = document.getElementById('metric-container');
         mContainer.innerHTML = '';
         const items = [
             {k:'pm25', l:'PM 2.5', u:'ug/m3', m:100},
             {k:'pm10', l:'PM 10', u:'ug/m3', m:150},
-            {k:'temp', l:'Temperature', u:'C', m:50},
+            {k:'temp', l:'Temperature', u:'°C', m:50},
             {k:'hum', l:'Humidity', u:'%', m:100},
             {k:'pm1', l:'PM 1.0', u:'ug/m3', m:100}
         ];
@@ -385,6 +394,7 @@ HTML_TEMPLATE = """
             </div>`;
         });
 
+        // RISKS
         const rContainer = document.getElementById('risk-container');
         if(data.health_risks.length > 0) {
             rContainer.innerHTML = '';
@@ -397,6 +407,7 @@ HTML_TEMPLATE = """
             });
         }
 
+        // HISTORY
         if(data.history && data.history.length > 0) {
             const hContainer = document.getElementById('history-container');
             hContainer.innerHTML = '';
@@ -412,6 +423,7 @@ HTML_TEMPLATE = """
             });
         }
 
+        // CHART
         if(data.chart_data.aqi.length > 0) {
             const ctx = document.getElementById('mainChart').getContext('2d');
             const labels = data.chart_data.gps.map(g => `${Number(g.lat).toFixed(4)}, ${Number(g.lon).toFixed(4)}`);
@@ -440,3 +452,109 @@ HTML_TEMPLATE = """
 </script>
 </body>
 </html>
+"""
+
+# --- BACKEND ROUTES ---
+
+@app.route('/')
+def home(): return render_template_string(HTML_TEMPLATE)
+
+@app.route('/api/data')
+def get_data(): 
+    current_data['history'] = history_log
+    return jsonify(current_data)
+
+@app.route('/upload', methods=['POST'])
+def upload_file():
+    global current_data
+    if 'file' not in request.files: return jsonify({"error": "No file"}), 400
+    file = request.files['file']
+    user_date = request.form.get('date', datetime.now().strftime('%Y-%m-%d'))
+
+    try:
+        if file.filename.endswith('.csv'): df = pd.read_csv(file)
+        elif file.filename.endswith(('.xlsx', '.xls')): df = pd.read_excel(file)
+        else: return jsonify({"error": "Invalid file"}), 400
+
+        df = normalize_columns(df)
+        all_cols = ['pm1','pm25','pm10','temp','hum','lat','lon']
+        for c in all_cols: 
+            if c not in df.columns: df[c] = 0
+
+        val = {k: round(df[k].mean(), 1) for k in all_cols}
+        aqi = int((val['pm25']*2) + (val['pm10']*0.5))
+        
+        valid_gps = df[(df['lat'] != 0) & (df['lon'] != 0)]
+        loc_name = get_city_name(valid_gps.iloc[0]['lat'], valid_gps.iloc[0]['lon']) if not valid_gps.empty else "No GPS Data"
+
+        gps_list = []
+        aqi_list = []
+        for i, r in df.head(50).iterrows():
+            row_aqi = int((r['pm25']*2) + (r['pm10']*0.5))
+            aqi_list.append(row_aqi)
+            gps_list.append({
+                "lat": r['lat'], "lon": r['lon'],
+                "city": get_city_name(r['lat'], r['lon']) if i % 5 == 0 else loc_name
+            })
+
+        history_entry = {
+            "date": user_date,
+            "filename": file.filename,
+            "location": loc_name,
+            "aqi": aqi
+        }
+        history_log.append(history_entry)
+        history_log.sort(key=lambda x: x['date'], reverse=True)
+
+        current_data.update({
+            "aqi": aqi, **val, "status": "Updated",
+            "location_name": loc_name,
+            "health_risks": calculate_advanced_health(val),
+            "chart_data": {"aqi": aqi_list, "gps": gps_list},
+            "last_updated": datetime.now().strftime("%H:%M:%S"),
+            "connection_status": "Connected"
+        })
+        return jsonify({"message": "Success", "data": current_data})
+    except Exception as e: return jsonify({"error": str(e)}), 500
+
+@app.route('/api/upload_sensor', methods=['POST'])
+def receive_sensor():
+    global current_data
+    try:
+        data = request.json
+        current_data.update(data)
+        
+        aqi = int((data.get('pm25',0)*2) + (data.get('pm10',0)*0.5))
+        current_data['aqi'] = aqi
+        current_data['health_risks'] = calculate_advanced_health(current_data)
+        current_data['location_name'] = get_city_name(data.get('lat',0), data.get('lon',0))
+        current_data['last_updated'] = datetime.now().strftime("%H:%M:%S")
+
+        current_data['chart_data']['aqi'].append(aqi)
+        if len(current_data['chart_data']['aqi']) > 50: current_data['chart_data']['aqi'].pop(0)
+        
+        current_data['chart_data']['gps'].append({
+            "lat": data.get('lat',0), "lon": data.get('lon',0),
+            "city": current_data['location_name']
+        })
+        if len(current_data['chart_data']['gps']) > 50: current_data['chart_data']['gps'].pop(0)
+
+        current_data['esp32_log'].append(f"> [REC] AQI:{aqi} | Loc:{current_data['location_name']}")
+        if len(current_data['esp32_log']) > 20: current_data['esp32_log'].pop(0)
+        
+        return jsonify({"status": "success"})
+    except Exception as e: return jsonify({"error": str(e)}), 400
+
+@app.route('/export')
+def export_report():
+    output = io.StringIO()
+    output.write(f"Report Date,{datetime.now()}\nLocation,{current_data['location_name']}\nAQI,{current_data['aqi']}\n\n")
+    for k in ['pm1','pm25','pm10','temp','hum','press','gas','alt']:
+        output.write(f"{k},{current_data.get(k,0)}\n")
+    mem = io.BytesIO()
+    mem.write(output.getvalue().encode('utf-8'))
+    mem.seek(0)
+    return send_file(mem, as_attachment=True, download_name="SkySense_Report.csv", mimetype="text/csv")
+
+if __name__ == '__main__':
+    app.run(debug=True)
