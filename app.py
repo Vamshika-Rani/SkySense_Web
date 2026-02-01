@@ -6,16 +6,14 @@ import datetime
 # Safe Import for Geopy
 try:
     from geopy.geocoders import Nominatim
-    geolocator = Nominatim(user_agent="skysense_final_v113")
+    geolocator = Nominatim(user_agent="skysense_final_v114")
 except ImportError:
     geolocator = None
 
 app = Flask(__name__)
 
-# --- GLOBAL DATA STORE ---
-# Stores history of uploads: [{'date': '...', 'filename': '...', 'status': 'Success'}]
+# --- GLOBAL DATA ---
 history_log = [] 
-
 current_data = {
     "aqi": 0, "pm1": 0, "pm25": 0, "pm10": 0, "temp": 0, "hum": 0,
     "avg_aqi": 0, "avg_pm1": 0, "avg_pm25": 0, "avg_pm10": 0, "avg_temp": 0, "avg_hum": 0,
@@ -176,14 +174,12 @@ HTML_STYLE = """
         .btn-primary { display:inline-block; background:#0f172a; color:white; padding:12px 25px; border-radius:8px; text-decoration:none; margin-right:10px; border:none; cursor:pointer; font-weight:600; font-size:0.9rem; }
         .btn-outline { display:inline-block; background:transparent; color:#0f172a; padding:12px 25px; border-radius:8px; text-decoration:none; border:2px solid #0f172a; font-weight:600; font-size:0.9rem; cursor:pointer; }
         
-        /* HISTORY TABLE */
         .history-table { width: 100%; border-collapse: collapse; margin-top: 15px; }
         .history-table th { text-align: left; padding: 12px; border-bottom: 2px solid #e7e5e4; color: var(--text-muted); font-size: 0.85rem; text-transform: uppercase; }
         .history-table td { padding: 15px 12px; border-bottom: 1px solid #e7e5e4; color: var(--text-main); font-size: 0.95rem; }
         .history-table tr:last-child td { border-bottom: none; }
         .status-badge { padding: 4px 10px; border-radius: 20px; font-size: 0.75rem; font-weight: 700; background: #dcfce7; color: #166534; }
 
-        /* PRINT STYLES FOR PDF EXPORT */
         @media print {
             .nav-tabs, .header button, .upload-card, .btn-primary, .btn-outline, #esp32, #upload, #export { display: none !important; }
             .header, .alert-banner, .section { width: 100%; margin: 0; padding: 0; box-shadow: none; }
@@ -285,7 +281,6 @@ HTML_BODY = """
             <div class="card-title" style="margin-bottom:20px;">Upload Flight Data</div>
             <p style="color:#78716c; margin-bottom:10px;">Select the date of the flight:</p>
             <input type="date" id="upload-date" class="date-picker">
-            
             <label class="upload-card">
                 <i class="fa-solid fa-cloud-arrow-up upload-icon"></i>
                 <div id="upload-text" style="font-weight:600; font-size:1.1rem; color:#1c1917;">Click to Upload File</div>
@@ -303,7 +298,6 @@ HTML_BODY = """
             </p>
             <div style="display:flex; gap:10px;">
                 <a href="/export/text" class="btn-primary"><i class="fa-solid fa-file-lines"></i> Export as Text File</a>
-                <button onclick="window.print()" class="btn-outline"><i class="fa-solid fa-file-pdf"></i> Export as PDF</button>
             </div>
         </div>
     </div>
