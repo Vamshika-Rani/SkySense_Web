@@ -2,11 +2,13 @@ from flask import Flask, render_template_string, jsonify, request, send_file
 import pandas as pd
 import io
 import datetime
+import random
 
 # Safe Import for Geopy
 try:
     from geopy.geocoders import Nominatim
-    geolocator = Nominatim(user_agent="skysense_final_v114")
+    # Use a random user agent to prevent blocking
+    geolocator = Nominatim(user_agent=f"skysense_final_v116_{random.randint(1000,9999)}")
 except ImportError:
     geolocator = None
 
@@ -26,17 +28,35 @@ current_data = {
 # --- ROBUST FILE READER ---
 def read_file_safely(file):
     file.seek(0)
-    # 1. Try Standard CSV
-    try: return pd.read_csv(file)
-    except: pass
     
-    # 2. Try Excel
-    try: file.seek(0); return pd.read_excel(file)
-    except: pass
+    # 1. Try Standard CSV
+    try: 
+        return pd.read_csv(file)
+    except: 
+        pass
+    
+    # 2. Try CSV with Latin Encoding (Common for Excel CSVs)
+    try: 
+        file.seek(0)
+        return pd.read_csv(file, encoding='latin1')
+    except: 
+        pass
 
-    # 3. Fallback CSV (Latin encoding)
-    try: file.seek(0); return pd.read_csv(file, encoding='latin1', sep=None, engine='python')
-    except: raise ValueError("File format not recognized. Please upload a valid CSV or Excel file.")
+    # 3. Try CSV with Python Engine (Handles bad lines better)
+    try: 
+        file.seek(0)
+        return pd.read_csv(file, sep=None, engine='python', encoding='utf-8', on_bad_lines='skip')
+    except: 
+        pass
+
+    # 4. Try Excel (xlsx)
+    try: 
+        file.seek(0)
+        return pd.read_excel(file)
+    except: 
+        pass
+
+    raise ValueError("Could not read file. Please ensure it is a valid CSV or Excel file.")
 
 def normalize_columns(df):
     col_map = {}
@@ -47,19 +67,31 @@ def normalize_columns(df):
         elif 'pm10' in c: col_map[col] = 'pm10'
         elif 'temp' in c: col_map[col] = 'temp'
         elif 'hum' in c: col_map[col] = 'hum'
+        # Catches 'latitude', 'lat', 'lalitude'
         elif 'lat' in c or 'lal' in c: col_map[col] = 'lat'
+        # Catches 'longitude', 'lon', 'lng'
         elif 'lon' in c or 'lng' in c: col_map[col] = 'lon'
     return df.rename(columns=col_map)
 
 def get_city_name(lat, lon):
-    if not geolocator or lat == 0: return "Unknown Area"
+    # Fallback to coordinates if Lat/Lon is 0 or geolocator is missing
+    if lat == 0 or lon == 0: return "No GPS Data"
+    
+    formatted_coords = f"{round(lat, 4)}°N, {round(lon, 4)}°E"
+    
+    if not geolocator: return formatted_coords
+    
     try:
-        loc = geolocator.reverse(f"{lat}, {lon}", exactly_one=True, language='en')
+        # Timeout added to prevent hanging
+        loc = geolocator.reverse(f"{lat}, {lon}", exactly_one=True, language='en', timeout=2)
         if loc:
             add = loc.raw.get('address', {})
-            return add.get('suburb') or add.get('city') or add.get('town') or "Unknown Area"
-    except: pass
-    return "Unknown Area"
+            city = add.get('suburb') or add.get('city') or add.get('town') or add.get('county')
+            if city: return city
+    except: 
+        pass
+        
+    return formatted_coords
 
 def calc_health(val):
     risks = []
@@ -102,7 +134,7 @@ def calc_health(val):
     })
     return risks
 
-# --- HTML TEMPLATE PARTS ---
+# --- HTML PARTS (Split for Safety) ---
 
 HTML_HEAD = """
 <!DOCTYPE html>
@@ -179,14 +211,6 @@ HTML_STYLE = """
         .history-table td { padding: 15px 12px; border-bottom: 1px solid #e7e5e4; color: var(--text-main); font-size: 0.95rem; }
         .history-table tr:last-child td { border-bottom: none; }
         .status-badge { padding: 4px 10px; border-radius: 20px; font-size: 0.75rem; font-weight: 700; background: #dcfce7; color: #166534; }
-
-        @media print {
-            .nav-tabs, .header button, .upload-card, .btn-primary, .btn-outline, #esp32, #upload, #export { display: none !important; }
-            .header, .alert-banner, .section { width: 100%; margin: 0; padding: 0; box-shadow: none; }
-            body { background: white; padding: 0; }
-            .card { border: 1px solid #ccc; box-shadow: none; margin-bottom: 20px; break-inside: avoid; }
-            .container { max-width: 100%; }
-        }
     </style>
 </head>
 """
@@ -332,9 +356,18 @@ HTML_SCRIPT = """
         try {
             const res = await fetch('/upload', { method: 'POST', body: fd });
             const d = await res.json();
-            if(d.error) { alert("Server Error: " + d.error); txt.innerText = "Upload Failed"; } 
-            else { txt.innerText = "Success!"; updateUI(d.data); setTimeout(()=>sw('overview'), 500); }
-        } catch(e) { alert("Upload Failed."); txt.innerText = "Retry"; }
+            if(d.error) { 
+                alert("Server Error: " + d.error); 
+                txt.innerText = "Upload Failed"; 
+            } else { 
+                txt.innerText = "Success!"; 
+                updateUI(d.data); 
+                setTimeout(()=>sw('overview'), 500); 
+            }
+        } catch(e) { 
+            alert("Upload Failed. Ensure the file is a valid CSV or Excel."); 
+            txt.innerText = "Retry"; 
+        }
     });
 
     function initMap() {
