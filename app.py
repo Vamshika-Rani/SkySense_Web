@@ -9,14 +9,11 @@ import time
 # --- SETUP ---
 try:
     from geopy.geocoders import Nominatim
-    # Random User Agent to prevent blocking
-    geolocator = Nominatim(user_agent=f"skysense_v_final_{random.randint(10000,99999)}")
+    geolocator = Nominatim(user_agent=f"skysense_final_v5_{random.randint(10000,99999)}")
 except ImportError:
     geolocator = None
 
 app = Flask(__name__)
-
-# --- CONFIGURATION: FILE SAVING ---
 UPLOAD_FOLDER = os.path.join(os.getcwd(), 'uploads')
 os.makedirs(UPLOAD_FOLDER, exist_ok=True)
 app.config['UPLOAD_FOLDER'] = UPLOAD_FOLDER
@@ -48,7 +45,7 @@ def read_file_safely(file):
     except: pass
     try: file.seek(0); return pd.read_excel(file)
     except: pass
-    raise ValueError("Invalid File")
+    raise ValueError("Invalid File Format")
 
 def normalize_columns(df):
     col_map = {}
@@ -65,30 +62,21 @@ def normalize_columns(df):
 
 def get_city_name(lat, lon):
     if lat == 0 or lon == 0: return "No GPS Signal"
-    
-    # 1. Check Cache
     key = (round(lat, 3), round(lon, 3))
     if key in location_cache: return location_cache[key]
     
     coord_str = f"{round(lat, 4)}, {round(lon, 4)}"
     if not geolocator: return coord_str
     
-    # 2. Try Geocoding (with retry)
     try:
         for _ in range(2): 
             try:
                 loc = geolocator.reverse(f"{lat}, {lon}", exactly_one=True, language='en', timeout=8)
                 if loc:
                     add = loc.raw.get('address', {})
-                    # Prioritize specific neighborhood/suburb
                     area = add.get('neighbourhood') or add.get('suburb') or add.get('residential') or add.get('road')
                     city = add.get('city') or add.get('town') or add.get('county')
-                    
-                    if area and city: res = f"{area}, {city}"
-                    elif area: res = f"{area}"
-                    elif city: res = f"{city}"
-                    else: res = coord_str
-                    
+                    res = f"{area}, {city}" if area and city else (area or city or coord_str)
                     location_cache[key] = res
                     return res
             except: time.sleep(1)
@@ -98,37 +86,49 @@ def get_city_name(lat, lon):
 def calc_health(val):
     aqi = int((val.get('pm25', 0) * 2) + (val.get('pm10', 0) * 0.5))
     if aqi <= 100:
-        return [{"name": "General Health", "desc": "Air is safe.", "prob": 5, "level": "Good", "recs": ["Ventilate home.", "Enjoy outdoors.", "No masks."]},
-                {"name": "Respiratory", "desc": "No irritation.", "prob": 5, "level": "Good", "recs": ["Exercise freely.", "Deep breathing.", "Fresh air."]},
-                {"name": "Sensitive Groups", "desc": "Safe for asthma.", "prob": 10, "level": "Low", "recs": ["Keep inhaler.", "Monitor pollen.", "No masks."]},
-                {"name": "Skin/Eye", "desc": "No risks.", "prob": 0, "level": "Low", "recs": ["No eyewear.", "Standard skincare.", "Sunscreen."]}]
+        return [
+            {"name": "General Well-being", "desc": "Air quality is satisfactory. It is a great day to be active outside.", "prob": 5, "level": "Good", "recs": ["Ventilate your home freely.", "Enjoy outdoor activities.", "No special filtration needed."]},
+            {"name": "Respiratory Health", "desc": "No irritation or respiratory distress expected for the general population.", "prob": 5, "level": "Good", "recs": ["Continue normal exercise routines.", "Deep breathing exercises are safe.", "Enjoy the fresh air."]},
+            {"name": "Sensitive Groups", "desc": "People with asthma or allergies can typically enjoy outdoors.", "prob": 10, "level": "Low", "recs": ["Keep usual rescue inhalers just in case.", "Monitor local pollen levels.", "No masks required."]},
+            {"name": "Skin & Eye Health", "desc": "Clear visibility and low particulate matter mean no irritation.", "prob": 0, "level": "Low", "recs": ["No protective eyewear needed.", "Standard skincare is sufficient.", "Use sunscreen."]}
+        ]
     elif aqi <= 200:
-        return [{"name": "Mild Irritation", "desc": "Throat tickle.", "prob": 40, "level": "Moderate", "recs": ["Limit exertion.", "Hydrate.", "Carry water."]},
-                {"name": "Asthma Risk", "desc": "Mild triggers.", "prob": 50, "level": "Moderate", "recs": ["Inhaler ready.", "Avoid traffic.", "Watch wheezing."]},
-                {"name": "Sinus", "desc": "Minor congestion.", "prob": 30, "level": "Moderate", "recs": ["Saline rinse.", "Shower after out.", "Close windows."]},
-                {"name": "Fatigue", "desc": "Quicker tiredness.", "prob": 25, "level": "Low", "recs": ["Take breaks.", "No heavy cardio.", "Check pulse."]}]
+        return [
+            {"name": "Mild Respiratory Irritation", "desc": "Sensitive individuals may experience coughing or minor throat irritation.", "prob": 40, "level": "Moderate", "recs": ["Limit prolonged outdoor exertion.", "Hydrate frequently to soothe throat.", "Carry water when walking outside."]},
+            {"name": "Asthma Aggravation", "desc": "Air quality is acceptable for most, but may trigger mild asthma symptoms.", "prob": 50, "level": "Moderate", "recs": ["Keep inhalers accessible at all times.", "Avoid jogging near heavy traffic.", "Watch for wheezing symptoms."]},
+            {"name": "Sinus Pressure", "desc": "Particulates may cause minor nasal congestion or sinus pressure.", "prob": 30, "level": "Moderate", "recs": ["Consider a saline nasal rinse.", "Shower after coming indoors.", "Keep windows closed during peak traffic."]},
+            {"name": "Fatigue Levels", "desc": "Slight reduction in oxygen efficiency may cause quicker tiredness.", "prob": 25, "level": "Low", "recs": ["Take more breaks during exercise.", "Avoid heavy cardio outdoors.", "Monitor heart rate during activity."]}
+        ]
     elif aqi <= 300:
-        return [{"name": "Bronchitis", "desc": "Inflamed tubes.", "prob": 65, "level": "High", "recs": ["Avoid outdoors.", "Wear N95.", "Air purifier."]},
-                {"name": "Cardiac", "desc": "BP elevation.", "prob": 50, "level": "High", "recs": ["Rest.", "Low salt.", "Monitor BP."]},
-                {"name": "Allergies", "desc": "Worsened symptoms.", "prob": 70, "level": "High", "recs": ["Antihistamines.", "Seal windows.", "Change clothes."]},
-                {"name": "Eyes", "desc": "Burning/watery.", "prob": 60, "level": "Mod", "recs": ["Eye drops.", "Sunglasses.", "No rubbing."]}]
+        return [
+            {"name": "Bronchitis Risk", "desc": "High PM levels can inflame bronchial tubes causing heavy coughing.", "prob": 65, "level": "High", "recs": ["Avoid all outdoor physical activity.", "Wear an N95 mask if outside.", "Use an air purifier in the bedroom."]},
+            {"name": "Cardiac Stress", "desc": "Fine particles entering the bloodstream can slightly elevate blood pressure.", "prob": 50, "level": "High", "recs": ["Heart patients should stay indoors.", "Avoid salty foods to keep BP low.", "Monitor blood pressure regularly."]},
+            {"name": "Allergic Rhinitis", "desc": "High pollution can mimic or worsen severe allergy symptoms.", "prob": 70, "level": "High", "recs": ["Take antihistamines if prescribed.", "Keep windows sealed tight.", "Change clothes immediately after entering."]},
+            {"name": "Eye Irritation", "desc": "Dust and chemicals in the air may cause burning or watery eyes.", "prob": 60, "level": "Moderate", "recs": ["Use lubricating eye drops.", "Wear sunglasses to block dust.", "Avoid rubbing eyes with unwashed hands."]}
+        ]
     elif aqi <= 400:
-        return [{"name": "Infection Risk", "desc": "Low immunity.", "prob": 80, "level": "Severe", "recs": ["Stay inside.", "N99 mask.", "Steam."]},
-                {"name": "Ischemic Risk", "desc": "Low heart oxygen.", "prob": 75, "level": "Severe", "recs": ["Elderly inside.", "No labor.", "Watch chest."]},
-                {"name": "Hypoxia", "desc": "Headaches.", "prob": 60, "level": "High", "recs": ["Use oxygen.", "Calm breathing.", "No smoke."]},
-                {"name": "Pneumonia", "desc": "Bacterial risk.", "prob": 50, "level": "High", "recs": ["Wash hands.", "Avoid crowds.", "Doctor visit."]}]
+        return [
+            {"name": "Acute Respiratory Infection", "desc": "Immune system in lungs is compromised, increasing infection risk.", "prob": 80, "level": "Severe", "recs": ["Strictly avoid outdoor exposure.", "Wear N95/N99 masks if transit is necessary.", "Steam inhalation twice a day."]},
+            {"name": "Ischemic Heart Risk", "desc": "Reduced oxygen supply to the heart due to pollution stress.", "prob": 75, "level": "Severe", "recs": ["Elderly should remain strictly indoors.", "Avoid any strenuous physical labor.", "Seek help if experiencing chest heaviness."]},
+            {"name": "Hypoxia Symptoms", "desc": "Lower oxygen intake may lead to headaches and dizziness.", "prob": 60, "level": "High", "recs": ["Use indoor plants or oxygen concentrators.", "Practice shallow, calm breathing.", "Avoid smoking or incense indoors."]},
+            {"name": "Pneumonia Susceptibility", "desc": "Lungs are highly vulnerable to bacterial and viral attacks.", "prob": 50, "level": "High", "recs": ["Maintain strict hand hygiene.", "Stay away from dusty places.", "Consult a doctor for persistent cough."]}
+        ]
     elif aqi <= 500:
-        return [{"name": "Lung Impair", "desc": "Hard breathing.", "prob": 90, "level": "Critical", "recs": ["Do not go out.", "Wet towels.", "Max purifier."]},
-                {"name": "Stroke Risk", "desc": "Thick blood.", "prob": 60, "level": "High", "recs": ["Hydrate.", "No stress.", "Emergency contact."]},
-                {"name": "Inflammation", "desc": "Body swelling.", "prob": 85, "level": "Critical", "recs": ["Anti-inflam food.", "Rest.", "No frying."]},
-                {"name": "Edema", "desc": "Lung fluid.", "prob": 40, "level": "Severe", "recs": ["Medical care.", "Sleep up.", "Don't lie flat."]}]
+        return [
+            {"name": "Severe Lung Impairment", "desc": "Healthy people will experience reduced endurance and breathing difficulty.", "prob": 90, "level": "Critical", "recs": ["Do not go outside under any circumstances.", "Seal window gaps with wet towels.", "Run air purifiers on maximum speed."]},
+            {"name": "Cerebrovascular Risk", "desc": "Increased risk of stroke due to thickened blood and inflammation.", "prob": 60, "level": "High", "recs": ["Stay hydrated to keep blood thin.", "Avoid stress and sudden movements.", "Keep emergency contacts ready."]},
+            {"name": "Systemic Inflammation", "desc": "Pollutants entering blood trigger inflammation throughout the body.", "prob": 85, "level": "Critical", "recs": ["Consume anti-inflammatory foods (turmeric, berries).", "Rest as much as possible.", "Avoid cooking that produces smoke."]},
+            {"name": "Pulmonary Edema Risk", "desc": "Fluid buildup in air sacs due to toxic chemical irritation.", "prob": 40, "level": "Severe", "recs": ["Seek immediate medical care for breathing issues.", "Sleep with head elevated.", "Avoid lying flat if breathing is hard."]}
+        ]
     else:
-        return [{"name": "ARDS", "desc": "Lung failure.", "prob": 95, "level": "Emergency", "recs": ["Evacuate.", "Oxygen.", "N99 mask."]},
-                {"name": "Cardiac Arrest", "desc": "Heart stress.", "prob": 70, "level": "Emergency", "recs": ["Bed rest.", "Defibrillator.", "No exertion."]},
-                {"name": "Asphyxia", "desc": "Choking feeling.", "prob": 90, "level": "Emergency", "recs": ["Clean room.", "Double filter.", "No talking."]},
-                {"name": "Perm Damage", "desc": "Scarring.", "prob": 80, "level": "Critical", "recs": ["Pulmonologist.", "Detox.", "Relocate."]}]
+        return [
+            {"name": "Acute Respiratory Distress (ARDS)", "desc": "Life-threatening lung failure potential. Oxygen absorption blocked.", "prob": 95, "level": "Emergency", "recs": ["Evacuate to a cleaner area if possible.", "Use medical-grade oxygen if prescribed.", "Wear N99/P100 respirator if moving."]},
+            {"name": "Cardiac Arrest Risk", "desc": "Extremely high stress on heart muscles due to toxic air.", "prob": 70, "level": "Emergency", "recs": ["Absolute bed rest suggested.", "Keep defibrillator/emergency services on speed dial.", "Do not exert yourself in any way."]},
+            {"name": "Asphyxiation Hazard", "desc": "Air is chemically toxic. Feeling of choking or suffocation.", "prob": 90, "level": "Emergency", "recs": ["Create a 'clean room' with no leaks.", "Use double-filtration air purifiers.", "Limit talking to conserve oxygen."]},
+            {"name": "Permanent Lung Damage", "desc": "Long-term scarring of lung tissue (Fibrosis) possible.", "prob": 80, "level": "Critical", "recs": ["Follow up with a pulmonologist immediately.", "Start long-term lung detox measures.", "Consider relocation if conditions persist."]}
+        ]
 
-# --- FRONTEND TEMPLATE (HTML+CSS+JS) ---
+# --- FRONTEND TEMPLATE ---
 HTML_TEMPLATE = """
 <!DOCTYPE html>
 <html lang="en">
@@ -155,7 +155,9 @@ body{font-family:'Inter',sans-serif;background:var(--bg);color:var(--text);paddi
 .stat-row{display:flex;gap:15px;margin-top:25px;} .stat{flex:1;background:#fafaf9;padding:15px;text-align:center;border-radius:10px;font-weight:700;}
 .risk-card{border:1px solid #e5e7eb;border-radius:12px;padding:20px;border-left:5px solid var(--dang);margin-bottom:15px;background:#fff;}
 .hist-table{width:100%;border-collapse:collapse;} .hist-table th{text-align:left;padding:10px;border-bottom:2px solid #eee;} .hist-table td{padding:10px;border-bottom:1px solid #eee;}
-.upload-area{border:2px dashed #cbd5e1;padding:40px;text-align:center;border-radius:15px;cursor:pointer;transition:0.2s;} .upload-area:hover{border-color:var(--prim);background:#f1f5f9;}
+.upload-card{border:2px dashed #cbd5e1;padding:30px;text-align:center;border-radius:15px;cursor:pointer;transition:0.2s;background:#fafaf9;display:flex;flex-direction:column;align-items:center;gap:10px;} 
+.upload-card:hover{border-color:var(--prim);background:#f1f5f9;}
+.upload-icon{font-size:2rem;color:#94a3b8;}
 @keyframes fadeIn{from{opacity:0;transform:translateY(5px);}to{opacity:1;transform:translateY(0);}}
 </style>
 </head>
@@ -181,7 +183,7 @@ body{font-family:'Inter',sans-serif;background:var(--bg);color:var(--text);paddi
    <div class="card aqi-box">
     <h3>Live Air Quality</h3>
     <div class="aqi-val" id="aqi">--</div>
-    <div style="color:#666;margin-top:5px;" id="loc">Waiting...</div>
+    <div style="color:#666;margin-top:5px;font-weight:600;" id="loc">Waiting...</div>
     <div class="stat-row">
      <div class="stat"><div id="p1">--</div><small>PM1.0</small></div>
      <div class="stat"><div id="p2">--</div><small>PM2.5</small></div>
@@ -196,14 +198,24 @@ body{font-family:'Inter',sans-serif;background:var(--bg);color:var(--text);paddi
  </div>
 
  <div id="gps" class="section">
-  <div class="card"><h3>AQI vs Location</h3><div style="height:500px;"><canvas id="chartGps"></canvas></div></div>
+  <div class="card"><h3>AQI Level vs Location</h3><div style="height:500px;"><canvas id="chartGps"></canvas></div></div>
  </div>
 
  <div id="anl" class="section">
-  <div class="card">
-   <h3>History Trends</h3>
-   <button onclick="upTr(7)">7 Days</button> <button onclick="upTr(30)">30 Days</button>
-   <div style="height:400px;margin-top:20px;"><canvas id="chartTr"></canvas></div>
+  <div class="grid">
+   <div class="card" style="height:fit-content;">
+    <h3>Select Period</h3>
+    <select id="trendFilter" onchange="upTr()" style="width:100%;padding:10px;border-radius:8px;border:1px solid #ccc;margin-top:10px;">
+     <option value="7">Last 7 Days</option>
+     <option value="30">Last 30 Days</option>
+     <option value="120">Last 120 Days</option>
+     <option value="365">Last 1 Year</option>
+    </select>
+   </div>
+   <div class="card">
+    <h3>Historical Trends</h3>
+    <div style="height:400px;"><canvas id="chartTr"></canvas></div>
+   </div>
   </div>
  </div>
 
@@ -220,29 +232,39 @@ body{font-family:'Inter',sans-serif;background:var(--bg);color:var(--text);paddi
  <div id="up" class="section">
   <div class="card">
    <h3>Upload Flight Data</h3>
-   <input type="date" id="dt" style="padding:10px;margin-bottom:10px;border:1px solid #ccc;border-radius:5px;">
-   <label class="upload-area"><div>Click to Select CSV/Excel</div><input type="file" id="fIn" hidden></label>
+   <input type="date" id="dt" style="width:100%;padding:12px;margin-bottom:20px;border:1px solid #e2e8f0;border-radius:10px;font-family:inherit;">
+   <label class="upload-card">
+    <i class="fa-solid fa-cloud-arrow-up upload-icon"></i>
+    <div id="upload-text" style="font-weight:600; font-size:1.1rem; color:#1e293b;">Click to Select CSV/Excel</div>
+    <div style="color:#64748b; font-size:0.9rem;">Supports .csv, .xlsx</div>
+    <input type="file" id="fIn" hidden>
+   </label>
   </div>
  </div>
 
- <div id="exp" class="section"><div class="card"><h3>Export</h3><a href="/export/text" style="display:inline-block;padding:12px 20px;background:#0f172a;color:#fff;text-decoration:none;border-radius:8px;">Download Report</a></div></div>
+ <div id="exp" class="section"><div class="card"><h3>Export</h3><p>Download a comprehensive report including location, averages, PM levels, and detailed health precautions.</p><a href="/export/text" style="display:inline-block;padding:12px 25px;background:#0f172a;color:#fff;text-decoration:none;border-radius:8px;margin-top:10px;"><i class="fa-solid fa-file-export"></i> Download Report</a></div></div>
 
 </div>
 <script>
  let cGps=null, cTr=null, hist=[];
- function sw(id){ document.querySelectorAll('.section').forEach(x=>x.classList.remove('active')); document.getElementById(id).classList.add('active'); document.querySelectorAll('.tab-btn').forEach(x=>x.classList.remove('active')); event.target.classList.add('active'); if(id==='anl') upTr(7); }
+ function sw(id){ document.querySelectorAll('.section').forEach(x=>x.classList.remove('active')); document.getElementById(id).classList.add('active'); document.querySelectorAll('.tab-btn').forEach(x=>x.classList.remove('active')); event.target.classList.add('active'); if(id==='anl') upTr(); }
  document.getElementById('dt').valueAsDate=new Date();
  setInterval(()=>{ fetch('/api/data').then(r=>r.json()).then(d=>{ hist=d.historical_stats||[]; upUI(d); }); },3000);
  document.getElementById('fIn').addEventListener('change',async(e)=>{
   let f=e.target.files[0]; if(!f)return;
+  let txt=document.getElementById('upload-text'); txt.innerText="Uploading...";
   let fd=new FormData(); fd.append('file',f); fd.append('date',document.getElementById('dt').value);
-  try{ await fetch('/upload',{method:'POST',body:fd}); alert('Uploaded!'); }catch(e){alert('Error');}
+  try{ const res=await fetch('/upload',{method:'POST',body:fd}); const d=await res.json(); 
+       txt.innerText=d.error?"Upload Failed":"Upload Success!"; 
+       if(!d.error){ upUI(d.data); setTimeout(()=>sw('ov'),800); }
+  }catch(e){ txt.innerText="Error"; }
  });
- function upTr(d){
+ function upTr(){
+  let d=parseInt(document.getElementById('trendFilter').value);
   let ctx=document.getElementById('chartTr').getContext('2d'); if(cTr)cTr.destroy();
   let cut=new Date(); cut.setDate(cut.getDate()-d);
-  let f=hist.filter(x=>d===0||new Date(x.date)>=cut).sort((a,b)=>new Date(a.date)-new Date(b.date));
-  cTr=new Chart(ctx,{type:'line',data:{labels:f.map(x=>x.date),datasets:[{label:'AQI',data:f.map(x=>x.aqi),borderColor:'#0f172a',tension:0.3}]},options:{responsive:true,maintainAspectRatio:false}});
+  let f=hist.filter(x=>new Date(x.date)>=cut).sort((a,b)=>new Date(a.date)-new Date(b.date));
+  cTr=new Chart(ctx,{type:'line',data:{labels:f.map(x=>x.date),datasets:[{label:'Average AQI',data:f.map(x=>x.aqi),borderColor:'#0f172a',backgroundColor:'rgba(15,23,42,0.1)',fill:true,tension:0.3}]},options:{responsive:true,maintainAspectRatio:false}});
  }
  function upUI(d){
   document.getElementById('aqi').innerText=d.aqi; document.getElementById('loc').innerText=d.location_name;
@@ -265,14 +287,14 @@ body{font-family:'Inter',sans-serif;background:var(--bg);color:var(--text);paddi
    let cleanLoc=d.location_name.split('(')[0].trim();
    let labs=d.chart_data.gps.map(g=>`${cleanLoc} (${Number(g.lat).toFixed(3)}, ${Number(g.lon).toFixed(3)})`);
    if(cGps)cGps.destroy();
-   cGps=new Chart(ctx,{type:'bar',data:{labels:labs,datasets:[{label:'AQI',data:d.chart_data.aqi,backgroundColor:'#3b82f6',borderRadius:4}]},options:{indexAxis:'y',responsive:true,maintainAspectRatio:false}});
+   cGps=new Chart(ctx,{type:'bar',data:{labels:labs,datasets:[{label:'AQI Level',data:d.chart_data.aqi,backgroundColor:'#3b82f6',borderRadius:4}]},options:{indexAxis:'y',responsive:true,maintainAspectRatio:false,scales:{x:{beginAtZero:true}}}});
   }
   document.getElementById('logs').innerText=d.esp32_log.join('\\n');
  }
 </script></body></html>
 """
 
-# --- ROUTES ---
+# --- BACKEND ROUTES ---
 @app.route('/')
 def home(): return render_template_string(HTML_TEMPLATE)
 
@@ -291,14 +313,12 @@ def upload():
     if 'file' not in request.files: return jsonify({"error": "No file"}), 400
     f, dt = request.files['file'], request.form.get('date', str(datetime.date.today()))
     try:
-        # SAVE FILE
         f.save(os.path.join(app.config['UPLOAD_FOLDER'], f.filename))
         f.seek(0)
-        
-        # PROCESS
         df = normalize_columns(read_file_safely(f))
+        
         valid = [r for i, r in df.head(100).iterrows() if r.get('lat',0) != 0]
-        if not valid: raise ValueError("No GPS")
+        if not valid: raise ValueError("No GPS Data")
         
         filtered = [valid[0]]
         for r in valid[1:]:
@@ -308,7 +328,6 @@ def upload():
         aqi = int(avgs['pm25']*2 + avgs['pm10']*0.5)
         loc = get_city_name(filtered[0]['lat'], filtered[0]['lon'])
         
-        # UPDATE LOGS
         history_log.insert(0, {"date":dt, "filename":f.filename, "status":"Success", "aqi": aqi})
         existing = next((x for x in historical_stats if x['date'] == dt), None)
         if existing: existing['aqi'] = aqi
@@ -332,7 +351,6 @@ def sensor():
         current_data.update(d)
         current_data['aqi'] = aqi
         current_data['health_risks'] = calc_health(current_data)
-        current_data['last_updated'] = datetime.datetime.now().strftime("%H:%M")
         
         if has_moved(d.get('lat',0), d.get('lon',0)) and d.get('lat',0) != 0:
             current_data['chart_data']['aqi'].append(aqi)
@@ -345,9 +363,28 @@ def sensor():
 @app.route('/export/text')
 def export():
     d = current_data
-    report = f"SKYSENSE REPORT\nDate: {datetime.datetime.now()}\nLoc: {d['location_name']}\nAQI: {d['aqi']}\n"
-    report += "\n".join([f"- {r['name']}: {r['desc']}" for r in d['health_risks']])
-    return send_file(io.BytesIO(report.encode()), mimetype='text/plain', as_attachment=True, download_name="report.txt")
+    report = f"""==================================================
+SKYSENSE DETAILED AIR QUALITY REPORT
+==================================================
+Date: {datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S")}
+Location: {d['location_name']}
+
+1. ENVIRONMENTAL AVERAGES
+-------------------------
+AQI Level: {d['aqi']}
+PM 1.0 : {d.get('avg_pm1', d.get('pm1', 0))} ug/m3
+PM 2.5 : {d.get('avg_pm25', d.get('pm25', 0))} ug/m3
+PM 10  : {d.get('avg_pm10', d.get('pm10', 0))} ug/m3
+Temp   : {d.get('avg_temp', d.get('temp', 0))} °C
+Humidity: {d.get('avg_hum', d.get('hum', 0))} %
+
+2. HEALTH RISKS & PRECAUTIONS
+-----------------------------"""
+    for r in d['health_risks']:
+        report += f"\n\n[RISK] {r['name']} ({r['level']})\nDescription: {r['desc']}\nPrecautions:\n"
+        for rec in r['recs']: report += f" - {rec}\n"
+    report += "\n==================================================\nGenerated by SkySense System\n"
+    return send_file(io.BytesIO(report.encode('utf-8')), mimetype='text/plain', as_attachment=True, download_name="SkySense_Report.txt")
 
 if __name__ == '__main__':
     app.run(debug=True)
