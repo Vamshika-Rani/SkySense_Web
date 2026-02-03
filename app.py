@@ -7,7 +7,7 @@ import random
 # Safe Import for Geopy
 try:
     from geopy.geocoders import Nominatim
-    geolocator = Nominatim(user_agent=f"skysense_final_v120_{random.randint(1000,9999)}")
+    geolocator = Nominatim(user_agent=f"skysense_final_v125_{random.randint(1000,9999)}")
 except ImportError:
     geolocator = None
 
@@ -29,7 +29,7 @@ def has_moved(lat, lon):
     gps_list = current_data['chart_data']['gps']
     if not gps_list: return True 
     last_pt = gps_list[-1]
-    # If moved more than ~5-10m
+    # Filter: Drone must move ~10 meters (0.0001 deg) to record a new data point
     return (abs(lat - last_pt['lat']) > 0.0001 or abs(lon - last_pt['lon']) > 0.0001)
 
 # --- ROBUST FILE READER ---
@@ -63,6 +63,7 @@ def get_city_name(lat, lon):
     formatted_coords = f"{round(lat, 4)}°N, {round(lon, 4)}°E"
     if not geolocator: return formatted_coords
     try:
+        # Timeout prevents server lag
         loc = geolocator.reverse(f"{lat}, {lon}", exactly_one=True, language='en', timeout=2)
         if loc:
             add = loc.raw.get('address', {})
@@ -210,8 +211,8 @@ HTML_BODY = """
 
     <div id="gps" class="section">
         <div class="card">
-            <div class="card-title">Live AQI Trend Line</div>
-            <div style="height:400px; margin-top:20px;"><canvas id="mainChart"></canvas></div>
+            <div class="card-title">AQI Level vs GPS Location</div>
+            <div style="height:500px; margin-top:20px;"><canvas id="mainChart"></canvas></div>
         </div>
     </div>
 
@@ -369,58 +370,50 @@ HTML_SCRIPT = """
             });
         }
 
-        // --- IMPROVED CHART (BEAUTIFUL LINE CHART) ---
+        // --- HORIZONTAL BAR CHART (UPDATED) ---
         if(data.chart_data.aqi.length > 0) {
             const ctx = document.getElementById('mainChart').getContext('2d');
             
-            // Generate Labels with CITY NAME
+            // Labels: Show specific City/Coords
             const labels = data.chart_data.gps.map((g, i) => {
-               // Show City only on every 5th label to avoid crowding, or if it's the last one
-               if (i % 5 === 0 || i === data.chart_data.gps.length - 1) {
-                   return `${data.location_name.split(',')[0]} (${Number(g.lat).toFixed(3)}, ${Number(g.lon).toFixed(3)})`;
-               }
-               return `${Number(g.lat).toFixed(3)}, ${Number(g.lon).toFixed(3)}`;
+               // Use specific coords for every point
+               return `${data.location_name.split(',')[0]} (${Number(g.lat).toFixed(3)}, ${Number(g.lon).toFixed(3)})`;
             });
-
-            // Create Gradient
-            let gradient = ctx.createLinearGradient(0, 0, 0, 400);
-            gradient.addColorStop(0, 'rgba(14, 165, 233, 0.5)'); // Blue
-            gradient.addColorStop(1, 'rgba(14, 165, 233, 0.0)'); // Transparent
 
             if(mainChart) mainChart.destroy();
             mainChart = new Chart(ctx, { 
-                type: 'line', 
+                type: 'bar', 
                 data: { 
                     labels: labels, 
                     datasets: [{ 
                         label: 'AQI Level', 
                         data: data.chart_data.aqi, 
-                        borderColor: '#0ea5e9',
-                        backgroundColor: gradient,
-                        borderWidth: 2,
-                        pointRadius: 3,
-                        pointBackgroundColor: '#fff',
-                        fill: true,
-                        tension: 0.4 // Smooth curves
+                        backgroundColor: '#3b82f6', // Solid Blue
+                        borderRadius: 5, // Rounded Bars
+                        barPercentage: 0.6
                     }] 
                 }, 
                 options: { 
+                    indexAxis: 'y', // MAKES IT HORIZONTAL
                     responsive: true, 
                     maintainAspectRatio: false,
                     scales: {
-                        x: { ticks: { maxRotation: 45, minRotation: 45, autoSkip: true, maxTicksLimit: 8 } },
-                        y: { beginAtZero: true }
+                        x: { beginAtZero: true, grid: { display: true } },
+                        y: { grid: { display: false }, ticks: { autoSkip: true, maxTicksLimit: 15 } }
+                    },
+                    plugins: {
+                        legend: { display: false }
                     }
                 } 
             });
         }
 
-        // --- IMPROVED MAP (AUTO-ZOOM) ---
+        // --- MAP LOGIC (AUTO-ZOOM) ---
         if(data.chart_data.gps.length > 0) {
             if(!map) initMap();
             const lastPt = data.chart_data.gps[data.chart_data.gps.length - 1];
             
-            // AUTO-FLY to the latest location (Zoom Level 16 = Street View)
+            // AUTO-FLY to the latest location
             if(lastPt.lat != 0) {
                 map.flyTo([lastPt.lat, lastPt.lon], 16, { animate: true, duration: 1.5 });
             }
@@ -458,20 +451,23 @@ def upload_file():
         for c in ['pm1','pm25','pm10','temp','hum','lat','lon']: 
             if c not in df.columns: df[c] = 0
         
-        # --- FIXED UPLOAD LOGIC: Filter duplicates ---
+        # --- FIXED UPLOAD LOGIC ---
         valid_rows = []
         last_added = None
         for i, r in df.head(100).iterrows(): # Limit 100 points
             if r['lat'] == 0 or r['lon'] == 0: continue
+            
             is_duplicate = False
             if last_added is not None:
                 if abs(r['lat'] - last_added['lat']) < 0.0001 and abs(r['lon'] - last_added['lon']) < 0.0001:
                     is_duplicate = True
+            
+            # Allow filtered points
             if not is_duplicate:
                 valid_rows.append(r)
                 last_added = r
 
-        if not valid_rows: raise ValueError("No valid GPS data found in file")
+        if not valid_rows: raise ValueError("No valid GPS data found (or all duplicates).")
         
         filtered_df = pd.DataFrame(valid_rows)
         avgs = {k: round(filtered_df[k].mean(), 1) for k in ['pm1','pm25','pm10','temp','hum']}
@@ -509,7 +505,6 @@ def sensor():
         current_data['location_name'] = get_city_name(d.get('lat',0), d.get('lon',0))
         current_data['last_updated'] = datetime.datetime.now().strftime("%H:%M")
         
-        # --- FIXED SENSOR LOGIC: Only add if moved ---
         if has_moved(d.get('lat',0), d.get('lon',0)) and d.get('lat',0) != 0:
             current_data['chart_data']['aqi'].append(aqi)
             current_data['chart_data']['gps'].append({"lat":d.get('lat',0),"lon":d.get('lon',0)})
