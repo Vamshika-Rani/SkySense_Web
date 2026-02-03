@@ -1,18 +1,23 @@
-from flask import Flask, render_template_string, jsonify, request, send_file
+from flask import Flask, render_template_string, jsonify, request, send_file, send_from_directory
 import pandas as pd
 import io
 import datetime
 import random
+import os
 
 # Safe Import for Geopy
 try:
     from geopy.geocoders import Nominatim
-    # Random User Agent to prevent blocking
-    geolocator = Nominatim(user_agent=f"skysense_pro_v145_{random.randint(10000,99999)}")
+    geolocator = Nominatim(user_agent=f"skysense_final_v150_{random.randint(10000,99999)}")
 except ImportError:
     geolocator = None
 
 app = Flask(__name__)
+
+# --- CONFIGURATION ---
+UPLOAD_FOLDER = 'uploads'
+os.makedirs(UPLOAD_FOLDER, exist_ok=True) # Create folder if not exists
+app.config['UPLOAD_FOLDER'] = UPLOAD_FOLDER
 
 # --- GLOBAL DATA ---
 history_log = [] 
@@ -59,38 +64,21 @@ def normalize_columns(df):
         elif 'lon' in c or 'lng' in c: col_map[col] = 'lon'
     return df.rename(columns=col_map)
 
-# --- UPDATED: GET EXACT LOCATION NAME ---
+# --- EXACT LOCATION NAME ---
 def get_city_name(lat, lon):
     if lat == 0 or lon == 0: return "No GPS Data"
-    
-    # Default format if geocoding fails
     coord_str = f"{round(lat, 4)}°N, {round(lon, 4)}°E"
-    
     if not geolocator: return coord_str
-    
     try:
-        # Increased timeout to 5s for reliability
         location = geolocator.reverse(f"{lat}, {lon}", exactly_one=True, language='en', timeout=5)
         if location:
             add = location.raw.get('address', {})
-            
-            # Prioritize "Exact Area" (Neighbourhood, Suburb, Road)
             area = add.get('neighbourhood') or add.get('suburb') or add.get('residential') or add.get('road') or add.get('village')
-            
-            # Fallback to City/Town
             city = add.get('city') or add.get('town') or add.get('county') or add.get('state_district')
-            
-            if area and city:
-                return f"{area}, {city}"
-            elif area:
-                return f"{area}"
-            elif city:
-                return f"{city}"
-            
-    except Exception as e:
-        print(f"Geocoding Error: {e}")
-        pass
-        
+            if area and city: return f"{area}, {city}"
+            elif area: return f"{area}"
+            elif city: return f"{city}"
+    except Exception: pass
     return coord_str
 
 # --- DYNAMIC HEALTH LOGIC (6 STRICT LEVELS) ---
@@ -100,48 +88,36 @@ def calc_health(val):
     aqi = int((pm25 * 2) + (pm10 * 0.5))
     risks = []
     
-    # LEVEL 1: AQI 0 - 100 (Safe)
     if aqi <= 100:
         risks.append({ "name": "General Well-being", "desc": "Air quality is satisfactory.", "prob": 5, "level": "Good", "recs": ["Active outdoors is safe.", "Ventilate home.", "No filters needed."] })
         risks.append({ "name": "Respiratory Health", "desc": "No irritation expected.", "prob": 5, "level": "Good", "recs": ["Exercise freely.", "Deep breathing safe.", "Enjoy fresh air."] })
         risks.append({ "name": "Sensitive Groups", "desc": "Safe for asthmatics.", "prob": 10, "level": "Low", "recs": ["Keep inhalers nearby.", "Monitor pollen.", "No masks."] })
         risks.append({ "name": "Skin & Eye Health", "desc": "No irritation risks.", "prob": 0, "level": "Low", "recs": ["No eyewear needed.", "Standard skincare.", "Use sunscreen."] })
-
-    # LEVEL 2: AQI 101 - 200 (Moderate)
     elif aqi <= 200:
         risks.append({ "name": "Mild Irritation", "desc": "Coughing/throat irritation possible.", "prob": 40, "level": "Moderate", "recs": ["Limit prolonged exertion.", "Hydrate throat.", "Carry water."] })
         risks.append({ "name": "Asthma Risk", "desc": "May trigger mild symptoms.", "prob": 50, "level": "Moderate", "recs": ["Inhalers accessible.", "Avoid heavy traffic.", "Watch for wheezing."] })
         risks.append({ "name": "Sinus Pressure", "desc": "Minor nasal congestion.", "prob": 30, "level": "Moderate", "recs": ["Saline rinse.", "Shower after outdoors.", "Close windows."] })
         risks.append({ "name": "Fatigue", "desc": "Quicker tiredness during sports.", "prob": 25, "level": "Low", "recs": ["Take breaks.", "Avoid heavy cardio.", "Monitor heart rate."] })
-
-    # LEVEL 3: AQI 201 - 300 (Poor)
     elif aqi <= 300:
         risks.append({ "name": "Bronchitis Risk", "desc": "Inflamed bronchial tubes.", "prob": 65, "level": "High", "recs": ["Avoid outdoor activity.", "Wear N95 mask.", "Use air purifier."] })
         risks.append({ "name": "Cardiac Stress", "desc": "Elevated blood pressure.", "prob": 50, "level": "High", "recs": ["Heart patients stay in.", "Avoid salty food.", "Monitor BP."] })
         risks.append({ "name": "Allergies", "desc": "Worsened allergy symptoms.", "prob": 70, "level": "High", "recs": ["Take antihistamines.", "Seal windows.", "Change clothes."] })
         risks.append({ "name": "Eye Irritation", "desc": "Burning or watery eyes.", "prob": 60, "level": "Moderate", "recs": ["Use eye drops.", "Wear sunglasses.", "Don't rub eyes."] })
-
-    # LEVEL 4: AQI 301 - 400 (Severe)
     elif aqi <= 400:
         risks.append({ "name": "Lung Infection", "desc": "High infection risk.", "prob": 80, "level": "Severe", "recs": ["Strictly avoid outdoors.", "Wear N99 mask.", "Steam inhalation."] })
         risks.append({ "name": "Ischemic Risk", "desc": "Reduced heart oxygen.", "prob": 75, "level": "Severe", "recs": ["Elderly stay inside.", "No physical labor.", "Watch chest pain."] })
         risks.append({ "name": "Hypoxia", "desc": "Headaches/Dizziness.", "prob": 60, "level": "High", "recs": ["Use oxygen/plants.", "Calm breathing.", "No smoking."] })
         risks.append({ "name": "Pneumonia", "desc": "Vulnerable to bacteria.", "prob": 50, "level": "High", "recs": ["Wash hands often.", "Avoid crowds.", "Consult doctor."] })
-
-    # LEVEL 5: AQI 401 - 500 (Hazardous)
     elif aqi <= 500:
         risks.append({ "name": "Lung Impairment", "desc": "Breathing difficulty.", "prob": 90, "level": "Critical", "recs": ["Do not go out.", "Wet towels on windows.", "Max air purifier."] })
         risks.append({ "name": "Stroke Risk", "desc": "Thickened blood.", "prob": 60, "level": "High", "recs": ["Hydrate heavily.", "Avoid stress.", "Emergency contacts ready."] })
         risks.append({ "name": "Inflammation", "desc": "Systemic body inflammation.", "prob": 85, "level": "Critical", "recs": ["Anti-inflammatory food.", "Rest fully.", "No frying food."] })
         risks.append({ "name": "Pulmonary Edema", "desc": "Fluid in lungs.", "prob": 40, "level": "Severe", "recs": ["Medical care if breathing hard.", "Sleep elevated.", "Don't lie flat."] })
-
-    # LEVEL 6: AQI 500+ (Emergency)
     else:
         risks.append({ "name": "ARDS", "desc": "Lung failure potential.", "prob": 95, "level": "Emergency", "recs": ["Evacuate area.", "Medical oxygen.", "N99 respirator."] })
         risks.append({ "name": "Cardiac Arrest", "desc": "Extreme heart stress.", "prob": 70, "level": "Emergency", "recs": ["Bed rest.", "Defibrillator ready.", "No exertion."] })
         risks.append({ "name": "Asphyxiation", "desc": "Toxic choking feeling.", "prob": 90, "level": "Emergency", "recs": ["Create clean room.", "Double filtration.", "Limit talking."] })
         risks.append({ "name": "Lung Damage", "desc": "Permanent scarring risk.", "prob": 80, "level": "Critical", "recs": ["See pulmonologist.", "Lung detox.", "Relocate."] })
-
     return risks
 
 # --- HTML PARTS ---
@@ -461,12 +437,12 @@ HTML_SCRIPT = """
             });
         }
 
-        // HISTORY UPDATE
+        // HISTORY UPDATE (WITH DOWNLOAD LINKS)
         const histBody = document.getElementById('history-body');
         if(data.history && data.history.length > 0) {
             histBody.innerHTML = '';
             data.history.forEach(h => {
-                histBody.innerHTML += `<tr><td>${h.date}</td><td>${h.filename}</td><td><strong>${h.aqi || '--'}</strong></td></tr>`;
+                histBody.innerHTML += `<tr><td>${h.date}</td><td><a href="/uploads/${h.filename}" target="_blank" style="color:#3b82f6; text-decoration:none; font-weight:600;">${h.filename}</a></td><td><strong>${h.aqi || '--'}</strong></td></tr>`;
             });
         }
 
@@ -475,7 +451,6 @@ HTML_SCRIPT = """
             const ctx = document.getElementById('mainChart').getContext('2d');
             const labels = data.chart_data.gps.map((g, i) => {
                // Show Exact Location + Coordinates
-               // Uses data.location_name which now includes the exact area/neighborhood
                return `${data.location_name.split(',')[0]} (${Number(g.lat).toFixed(3)}, ${Number(g.lon).toFixed(3)})`;
             });
 
@@ -523,6 +498,10 @@ def get_data():
     current_data['historical_stats'] = historical_stats
     return jsonify(current_data)
 
+@app.route('/uploads/<filename>')
+def download_file(filename):
+    return send_from_directory(app.config['UPLOAD_FOLDER'], filename)
+
 @app.route('/upload', methods=['POST'])
 def upload_file():
     global current_data
@@ -530,6 +509,12 @@ def upload_file():
     f = request.files['file']
     dt = request.form.get('date', datetime.datetime.now().strftime('%Y-%m-%d'))
     try:
+        # 1. SAVE FILE FOR HISTORY
+        filepath = os.path.join(app.config['UPLOAD_FOLDER'], f.filename)
+        f.save(filepath)
+        f.seek(0) # Reset pointer so pandas can read it
+
+        # 2. PROCESS FILE
         df = read_file_safely(f)
         df = normalize_columns(df)
         for c in ['pm1','pm25','pm10','temp','hum','lat','lon']: 
