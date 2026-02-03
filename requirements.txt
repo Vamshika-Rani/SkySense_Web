@@ -3,5 +3,3 @@ pandas
 openpyxl
 geopy
 gunicorn
-flask-socketio
-simple-websocket
