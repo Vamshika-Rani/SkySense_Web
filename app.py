@@ -1,14 +1,17 @@
-from flask import Flask, render_template_string, jsonify, request, send_file, send_from_directory
+from flask import Flask, render_template_string, jsonify, request, send_from_directory
 import pandas as pd
 import io
 import datetime
 import random
 import os
+import time
 
-# Safe Import for Geopy
+# Safe Import for Geopy with Retry Logic
 try:
     from geopy.geocoders import Nominatim
-    geolocator = Nominatim(user_agent=f"skysense_final_v150_{random.randint(10000,99999)}")
+    from geopy.exc import GeocoderTimedOut, GeocoderServiceError
+    # Unique User Agent to prevent blocking
+    geolocator = Nominatim(user_agent=f"skysense_monitor_app_{random.randint(10000,99999)}")
 except ImportError:
     geolocator = None
 
@@ -16,16 +19,18 @@ app = Flask(__name__)
 
 # --- CONFIGURATION ---
 UPLOAD_FOLDER = 'uploads'
-os.makedirs(UPLOAD_FOLDER, exist_ok=True) # Create folder if not exists
+os.makedirs(UPLOAD_FOLDER, exist_ok=True)
 app.config['UPLOAD_FOLDER'] = UPLOAD_FOLDER
 
 # --- GLOBAL DATA ---
 history_log = [] 
 historical_stats = [] 
+location_cache = {} # Caches coords -> "City Name" to prevent API timeouts
+
 current_data = {
     "aqi": 0, "pm1": 0, "pm25": 0, "pm10": 0, "temp": 0, "hum": 0,
     "avg_aqi": 0, "avg_pm1": 0, "avg_pm25": 0, "avg_pm10": 0, "avg_temp": 0, "avg_hum": 0,
-    "status": "Waiting...", "location_name": "Waiting for Data...",
+    "status": "Waiting...", "location_name": "Waiting for GPS...",
     "health_risks": [], "chart_data": {"aqi":[], "gps":[]},
     "esp32_log": ["> System Initialized...", "> Ready for connection..."],
     "last_updated": "Never"
@@ -36,6 +41,7 @@ def has_moved(lat, lon):
     gps_list = current_data['chart_data']['gps']
     if not gps_list: return True 
     last_pt = gps_list[-1]
+    # Filter: Drone must move ~10 meters to record a new data point
     return (abs(lat - last_pt['lat']) > 0.0001 or abs(lon - last_pt['lon']) > 0.0001)
 
 # --- ROBUST FILE READER ---
@@ -64,21 +70,47 @@ def normalize_columns(df):
         elif 'lon' in c or 'lng' in c: col_map[col] = 'lon'
     return df.rename(columns=col_map)
 
-# --- EXACT LOCATION NAME ---
+# --- UPDATED: ROBUST LOCATION FINDER WITH CACHE ---
 def get_city_name(lat, lon):
-    if lat == 0 or lon == 0: return "No GPS Data"
+    if lat == 0 or lon == 0: return "No GPS Signal"
+    
+    # Create a cache key (round to 3 decimals = ~100m radius)
+    # This prevents spamming the API if the drone hovers in one area
+    cache_key = (round(lat, 3), round(lon, 3))
+    if cache_key in location_cache:
+        return location_cache[cache_key]
+
     coord_str = f"{round(lat, 4)}°N, {round(lon, 4)}°E"
     if not geolocator: return coord_str
+    
     try:
-        location = geolocator.reverse(f"{lat}, {lon}", exactly_one=True, language='en', timeout=5)
-        if location:
-            add = location.raw.get('address', {})
-            area = add.get('neighbourhood') or add.get('suburb') or add.get('residential') or add.get('road') or add.get('village')
-            city = add.get('city') or add.get('town') or add.get('county') or add.get('state_district')
-            if area and city: return f"{area}, {city}"
-            elif area: return f"{area}"
-            elif city: return f"{city}"
-    except Exception: pass
+        # Retry logic: Try 3 times if it times out
+        for attempt in range(3): 
+            try:
+                # Timeout 10s for slow responses
+                location = geolocator.reverse(f"{lat}, {lon}", exactly_one=True, language='en', timeout=10)
+                if location:
+                    add = location.raw.get('address', {})
+                    # Prioritize specific areas
+                    area = add.get('neighbourhood') or add.get('suburb') or add.get('residential') or add.get('road') or add.get('village')
+                    city = add.get('city') or add.get('town') or add.get('county') or add.get('state_district')
+                    
+                    result = coord_str # Default
+                    if area and city: result = f"{area}, {city}"
+                    elif area: result = f"{area}"
+                    elif city: result = f"{city}"
+                    
+                    # Save to cache if successful
+                    location_cache[cache_key] = result
+                    return result
+            except (GeocoderTimedOut, GeocoderServiceError):
+                time.sleep(1) # Wait 1s before retry
+                continue
+                
+    except Exception as e:
+        print(f"Geo Error: {e}")
+        pass
+        
     return coord_str
 
 # --- DYNAMIC HEALTH LOGIC (6 STRICT LEVELS) ---
@@ -437,7 +469,7 @@ HTML_SCRIPT = """
             });
         }
 
-        // HISTORY UPDATE (WITH DOWNLOAD LINKS)
+        // HISTORY UPDATE
         const histBody = document.getElementById('history-body');
         if(data.history && data.history.length > 0) {
             histBody.innerHTML = '';
@@ -446,12 +478,16 @@ HTML_SCRIPT = """
             });
         }
 
-        // --- UPDATED CHART LABELS (WITH CITY NAME) ---
+        // --- UPDATED CHART LABELS (CLEAN LOCATION) ---
         if(data.chart_data.aqi.length > 0) {
             const ctx = document.getElementById('mainChart').getContext('2d');
+            
+            // Clean the name to remove any duplicate coordinates
+            let cleanLocName = data.location_name.split('(')[0].trim();
+            
             const labels = data.chart_data.gps.map((g, i) => {
-               // Show Exact Location + Coordinates
-               return `${data.location_name.split(',')[0]} (${Number(g.lat).toFixed(3)}, ${Number(g.lon).toFixed(3)})`;
+               // FORCE label format: "City Name (Lat, Lon)"
+               return `${cleanLocName} (${Number(g.lat).toFixed(3)}, ${Number(g.lon).toFixed(3)})`;
             });
 
             if(mainChart) mainChart.destroy();
@@ -485,157 +521,3 @@ HTML_SCRIPT = """
 </script>
 </body>
 </html>
-"""
-
-# --- BACKEND ROUTES ---
-
-@app.route('/')
-def home(): return render_template_string(HTML_HEAD + HTML_STYLE + HTML_BODY + HTML_SCRIPT)
-
-@app.route('/api/data')
-def get_data(): 
-    current_data['history'] = history_log
-    current_data['historical_stats'] = historical_stats
-    return jsonify(current_data)
-
-@app.route('/uploads/<filename>')
-def download_file(filename):
-    return send_from_directory(app.config['UPLOAD_FOLDER'], filename)
-
-@app.route('/upload', methods=['POST'])
-def upload_file():
-    global current_data
-    if 'file' not in request.files: return jsonify({"error": "No file"}), 400
-    f = request.files['file']
-    dt = request.form.get('date', datetime.datetime.now().strftime('%Y-%m-%d'))
-    try:
-        # 1. SAVE FILE FOR HISTORY
-        filepath = os.path.join(app.config['UPLOAD_FOLDER'], f.filename)
-        f.save(filepath)
-        f.seek(0) # Reset pointer so pandas can read it
-
-        # 2. PROCESS FILE
-        df = read_file_safely(f)
-        df = normalize_columns(df)
-        for c in ['pm1','pm25','pm10','temp','hum','lat','lon']: 
-            if c not in df.columns: df[c] = 0
-        
-        valid_rows = []
-        last_added = None
-        for i, r in df.head(100).iterrows(): 
-            if r['lat'] == 0 or r['lon'] == 0: continue
-            
-            is_duplicate = False
-            if last_added is not None:
-                if abs(r['lat'] - last_added['lat']) < 0.0001 and abs(r['lon'] - last_added['lon']) < 0.0001:
-                    is_duplicate = True
-            
-            if not is_duplicate:
-                valid_rows.append(r)
-                last_added = r
-
-        if not valid_rows: raise ValueError("No valid GPS data found (or all duplicates).")
-        
-        filtered_df = pd.DataFrame(valid_rows)
-        avgs = {k: round(filtered_df[k].mean(), 1) for k in ['pm1','pm25','pm10','temp','hum']}
-        aqi = int((avgs['pm25']*2) + (avgs['pm10']*0.5))
-        
-        # Get Exact Location
-        loc = get_city_name(valid_rows[0]['lat'], valid_rows[0]['lon'])
-        
-        gps, aqis = [], []
-        for r in valid_rows:
-            aqis.append(int((r['pm25']*2)+(r['pm10']*0.5)))
-            gps.append({"lat":r['lat'], "lon":r['lon']})
-            
-        history_log.insert(0, {"date":dt, "filename":f.filename, "status":"Success", "aqi": aqi})
-        
-        existing_record = next((item for item in historical_stats if item["date"] == dt), None)
-        if existing_record:
-            existing_record['aqi'] = aqi 
-        else:
-            historical_stats.append({"date": dt, "aqi": aqi, "pm25": avgs['pm25']})
-            
-        historical_stats.sort(key=lambda x: x['date'])
-        
-        current_data.update({
-            "aqi": aqi, "location_name": loc, 
-            "avg_pm1": avgs['pm1'], "avg_pm25": avgs['pm25'], "avg_pm10": avgs['pm10'],
-            "avg_temp": avgs['temp'], "avg_hum": avgs['hum'],
-            "pm1": avgs['pm1'], "pm25": avgs['pm25'], "pm10": avgs['pm10'], 
-            "health_risks": calc_health({"pm25":avgs['pm25'], "pm10":avgs['pm10'], "aqi":aqi}), 
-            "chart_data": {"aqi":aqis,"gps":gps}, 
-            "last_updated": datetime.datetime.now().strftime("%H:%M")
-        })
-        return jsonify({"message": "Success", "data": current_data})
-    except Exception as e: return jsonify({"error": str(e)}), 500
-
-@app.route('/api/upload_sensor', methods=['POST'])
-def sensor():
-    try:
-        d = request.json
-        current_data.update(d)
-        aqi = int((d.get('pm25',0)*2) + (d.get('pm10',0)*0.5))
-        current_data['aqi'] = aqi
-        current_data['health_risks'] = calc_health(current_data)
-        current_data['location_name'] = get_city_name(d.get('lat',0), d.get('lon',0))
-        current_data['last_updated'] = datetime.datetime.now().strftime("%H:%M")
-        
-        if has_moved(d.get('lat',0), d.get('lon',0)) and d.get('lat',0) != 0:
-            current_data['chart_data']['aqi'].append(aqi)
-            current_data['chart_data']['gps'].append({"lat":d.get('lat',0),"lon":d.get('lon',0)})
-            if len(current_data['chart_data']['aqi']) > 50: 
-                current_data['chart_data']['aqi'].pop(0)
-                current_data['chart_data']['gps'].pop(0)
-        
-        current_data['esp32_log'].insert(0, f"> AQI:{aqi} | T:{d.get('temp')}")
-        return jsonify({"status":"ok"})
-    except Exception as e: return jsonify({"error":str(e)}), 400
-
-@app.route('/export/text')
-def export_text():
-    d = current_data
-    report = f"""
-==================================================
-SKYSENSE AIR QUALITY & HEALTH REPORT
-==================================================
-Date: {datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S")}
-Location: {d['location_name']}
-
---------------------------------------------------
-1. ENVIRONMENTAL SUMMARY (AVERAGES)
---------------------------------------------------
-Air Quality Index (AQI): {d['aqi']}
-Status: {'Poor' if d['aqi'] > 100 else 'Good'}
-
-Particulate Matter:
-- PM 1.0 : {d.get('avg_pm1', d.get('pm1', 0))} ug/m3
-- PM 2.5 : {d.get('avg_pm25', d.get('pm25', 0))} ug/m3
-- PM 10  : {d.get('avg_pm10', d.get('pm10', 0))} ug/m3
-
-Conditions:
-- Temperature: {d.get('avg_temp', d.get('temp', 0))} °C
-- Humidity:    {d.get('avg_hum', d.get('hum', 0))} %
-
---------------------------------------------------
-2. HEALTH RISK ANALYSIS & PRECAUTIONS
---------------------------------------------------
-"""
-    for risk in d['health_risks']:
-        report += f"\n[RISK] {risk['name']} ({risk['level']})\n"
-        report += f"Description: {risk['desc']}\n"
-        report += "Precautions:\n"
-        for rec in risk['recs']:
-            report += f" - {rec}\n"
-    
-    report += "\n==================================================\nGenerated by SkySense System\n"
-    
-    return send_file(
-        io.BytesIO(report.encode('utf-8')),
-        mimetype='text/plain',
-        as_attachment=True,
-        download_name=f"SkySense_Report_{datetime.datetime.now().strftime('%Y%m%d')}.txt"
-    )
-
-if __name__ == '__main__':
-    app.run(debug=True)
