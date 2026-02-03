@@ -7,7 +7,7 @@ import random
 # Safe Import for Geopy
 try:
     from geopy.geocoders import Nominatim
-    geolocator = Nominatim(user_agent=f"skysense_final_v125_{random.randint(1000,9999)}")
+    geolocator = Nominatim(user_agent=f"skysense_final_v128_{random.randint(1000,9999)}")
 except ImportError:
     geolocator = None
 
@@ -15,6 +15,7 @@ app = Flask(__name__)
 
 # --- GLOBAL DATA ---
 history_log = [] 
+historical_stats = [] # Stores {date, aqi, pm25} for comparison
 current_data = {
     "aqi": 0, "pm1": 0, "pm25": 0, "pm10": 0, "temp": 0, "hum": 0,
     "avg_aqi": 0, "avg_pm1": 0, "avg_pm25": 0, "avg_pm10": 0, "avg_temp": 0, "avg_hum": 0,
@@ -29,7 +30,6 @@ def has_moved(lat, lon):
     gps_list = current_data['chart_data']['gps']
     if not gps_list: return True 
     last_pt = gps_list[-1]
-    # Filter: Drone must move ~10 meters (0.0001 deg) to record a new data point
     return (abs(lat - last_pt['lat']) > 0.0001 or abs(lon - last_pt['lon']) > 0.0001)
 
 # --- ROBUST FILE READER ---
@@ -63,7 +63,6 @@ def get_city_name(lat, lon):
     formatted_coords = f"{round(lat, 4)}°N, {round(lon, 4)}°E"
     if not geolocator: return formatted_coords
     try:
-        # Timeout prevents server lag
         loc = geolocator.reverse(f"{lat}, {lon}", exactly_one=True, language='en', timeout=2)
         if loc:
             add = loc.raw.get('address', {})
@@ -106,8 +105,8 @@ HTML_HEAD = """
     <title>SkySense | Pro Dashboard</title>
     <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800&display=swap" rel="stylesheet">
     <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.4.0/css/all.min.css">
-    <link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css" />
     <script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
+    <script src="https://cdn.jsdelivr.net/npm/chartjs-adapter-date-fns"></script>
 """
 
 HTML_STYLE = """
@@ -154,13 +153,15 @@ HTML_STYLE = """
         .upload-icon { font-size: 3rem; color: #d6d3d1; margin-bottom: 15px; transition:0.2s; }
         .upload-card:hover .upload-icon { color: var(--primary); }
         .date-picker { width:100%; padding:15px; border:1px solid #e7e5e4; border-radius:12px; font-size:1rem; margin-bottom:20px; font-family:'Inter',sans-serif; }
-        #map-container { height: 450px; width: 100%; border-radius: 16px; z-index: 1; }
         .btn-primary { display:inline-block; background:#0f172a; color:white; padding:12px 25px; border-radius:8px; text-decoration:none; margin-right:10px; border:none; cursor:pointer; font-weight:600; font-size:0.9rem; }
         .history-table { width: 100%; border-collapse: collapse; margin-top: 15px; }
         .history-table th { text-align: left; padding: 12px; border-bottom: 2px solid #e7e5e4; color: var(--text-muted); font-size: 0.85rem; text-transform: uppercase; }
         .history-table td { padding: 15px 12px; border-bottom: 1px solid #e7e5e4; color: var(--text-main); font-size: 0.95rem; }
         .history-table tr:last-child td { border-bottom: none; }
         .status-badge { padding: 4px 10px; border-radius: 20px; font-size: 0.75rem; font-weight: 700; background: #dcfce7; color: #166534; }
+        
+        .filter-btn { padding: 8px 16px; border: 1px solid #e7e5e4; background: white; border-radius: 20px; cursor: pointer; margin-right: 5px; font-weight: 500; font-size: 0.85rem; }
+        .filter-btn.active { background: var(--primary); color: white; border-color: var(--primary); }
     </style>
 </head>
 """
@@ -181,8 +182,7 @@ HTML_BODY = """
     <div class="nav-tabs">
         <button class="tab-btn active" onclick="sw('overview')">Overview</button>
         <button class="tab-btn" onclick="sw('gps')">GPS Charts</button>
-        <button class="tab-btn" onclick="sw('heatmap')">Heatmap</button>
-        <button class="tab-btn" onclick="sw('disease')">Disease Reports</button>
+        <button class="tab-btn" onclick="sw('analytics')">Analytics</button> <button class="tab-btn" onclick="sw('disease')">Disease Reports</button>
         <button class="tab-btn" onclick="sw('history')">History</button>
         <button class="tab-btn" onclick="sw('esp32')">ESP32</button>
         <button class="tab-btn" onclick="sw('upload')">Upload</button>
@@ -216,11 +216,18 @@ HTML_BODY = """
         </div>
     </div>
 
-    <div id="heatmap" class="section">
+    <div id="analytics" class="section">
         <div class="card">
-            <div class="card-title">Pollution Heatmap (Auto-Zoom)</div>
-            <p style="color:#78716c; font-size:0.9rem;">Map automatically flies to drone location.</p>
-            <div id="map-container" style="margin-top:20px;"></div>
+            <div class="card-header">
+                <div class="card-title">Historical AQI Trends</div>
+                <div>
+                    <button class="filter-btn active" onclick="updateTrend(7)">7 Days</button>
+                    <button class="filter-btn" onclick="updateTrend(30)">30 Days</button>
+                    <button class="filter-btn" onclick="updateTrend(0)">All Time</button>
+                </div>
+            </div>
+            <div style="height:400px;"><canvas id="trendChart"></canvas></div>
+            <p style="text-align:center; color:#78716c; margin-top:10px; font-size:0.9rem;">Comparison of AQI levels based on uploaded flight data.</p>
         </div>
     </div>
 
@@ -235,7 +242,7 @@ HTML_BODY = """
         <div class="card">
             <div class="card-title">Upload History</div>
             <table class="history-table">
-                <thead><tr><th>Date</th><th>Filename</th><th>Status</th></tr></thead>
+                <thead><tr><th>Date</th><th>Filename</th><th>AQI</th></tr></thead>
                 <tbody id="history-body">
                     <tr><td colspan="3" style="text-align:center; color:#78716c;">No files uploaded yet.</td></tr>
                 </tbody>
@@ -279,23 +286,26 @@ HTML_BODY = """
 """
 
 HTML_SCRIPT = """
-<script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
-<script src="https://cdnjs.cloudflare.com/ajax/libs/leaflet.heat/0.2.0/leaflet-heat.js"></script>
-
 <script>
-    let map = null, heatLayer = null, mainChart = null;
+    let mainChart = null;
+    let trendChart = null;
+    let rawHistory = []; // Stores loaded history data
 
     function sw(id) {
         document.querySelectorAll('.section').forEach(e => e.classList.remove('active'));
         document.getElementById(id).classList.add('active');
         document.querySelectorAll('.tab-btn').forEach(e => e.classList.remove('active'));
         document.querySelector(`button[onclick="sw('${id}')"]`).classList.add('active');
-        if(id === 'heatmap') setTimeout(initMap, 200);
+        // If switching to analytics, force render
+        if(id === 'analytics') updateTrend(7); 
     }
 
     document.getElementById('upload-date').valueAsDate = new Date();
 
-    setInterval(() => { fetch('/api/data').then(r => r.json()).then(d => updateUI(d)); }, 3000);
+    setInterval(() => { fetch('/api/data').then(r => r.json()).then(d => {
+        rawHistory = d.historical_stats || [];
+        updateUI(d);
+    }); }, 3000);
 
     document.getElementById('fileInput').addEventListener('change', async (e) => {
         const file = e.target.files[0];
@@ -311,6 +321,7 @@ HTML_SCRIPT = """
                 txt.innerText = "Upload Failed"; 
             } else { 
                 txt.innerText = "Success!"; 
+                rawHistory = d.data.historical_stats || [];
                 updateUI(d.data); 
                 setTimeout(()=>sw('overview'), 500); 
             }
@@ -320,10 +331,52 @@ HTML_SCRIPT = """
         }
     });
 
-    function initMap() {
-        if (map) { map.invalidateSize(); return; }
-        map = L.map('map-container').setView([20.5937, 78.9629], 5);
-        L.tileLayer('https://{s}.basemaps.cartocdn.com/light_all/{z}/{x}/{y}{r}.png', { attribution: '© OpenStreetMap' }).addTo(map);
+    // --- NEW TREND CHART LOGIC ---
+    function updateTrend(days) {
+        // Toggle buttons
+        document.querySelectorAll('.filter-btn').forEach(b => b.classList.remove('active'));
+        event.target.classList.add('active');
+
+        if(!rawHistory || rawHistory.length === 0) return;
+
+        // Filter Data by Date
+        const now = new Date();
+        const cutoff = new Date();
+        cutoff.setDate(now.getDate() - days);
+
+        // Filter and Sort by Date (Ascending)
+        let filtered = rawHistory.filter(d => {
+            if(days === 0) return true; // All Time
+            return new Date(d.date) >= cutoff;
+        }).sort((a,b) => new Date(a.date) - new Date(b.date));
+
+        const labels = filtered.map(d => d.date);
+        const data = filtered.map(d => d.aqi);
+
+        const ctx = document.getElementById('trendChart').getContext('2d');
+        if(trendChart) trendChart.destroy();
+
+        trendChart = new Chart(ctx, {
+            type: 'line',
+            data: {
+                labels: labels,
+                datasets: [{
+                    label: 'Average AQI',
+                    data: data,
+                    borderColor: '#0f172a',
+                    backgroundColor: 'rgba(15, 23, 42, 0.1)',
+                    borderWidth: 2,
+                    fill: true,
+                    tension: 0.3,
+                    pointRadius: 4
+                }]
+            },
+            options: {
+                responsive: true,
+                maintainAspectRatio: false,
+                scales: { y: { beginAtZero: true } }
+            }
+        });
     }
 
     function updateUI(data) {
@@ -366,17 +419,14 @@ HTML_SCRIPT = """
         if(data.history && data.history.length > 0) {
             histBody.innerHTML = '';
             data.history.forEach(h => {
-                histBody.innerHTML += `<tr><td>${h.date}</td><td>${h.filename}</td><td><span class="status-badge">${h.status}</span></td></tr>`;
+                histBody.innerHTML += `<tr><td>${h.date}</td><td>${h.filename}</td><td><strong>${h.aqi || '--'}</strong></td></tr>`;
             });
         }
 
-        // --- HORIZONTAL BAR CHART (UPDATED) ---
+        // --- HORIZONTAL BAR CHART ---
         if(data.chart_data.aqi.length > 0) {
             const ctx = document.getElementById('mainChart').getContext('2d');
-            
-            // Labels: Show specific City/Coords
             const labels = data.chart_data.gps.map((g, i) => {
-               // Use specific coords for every point
                return `${data.location_name.split(',')[0]} (${Number(g.lat).toFixed(3)}, ${Number(g.lon).toFixed(3)})`;
             });
 
@@ -388,40 +438,24 @@ HTML_SCRIPT = """
                     datasets: [{ 
                         label: 'AQI Level', 
                         data: data.chart_data.aqi, 
-                        backgroundColor: '#3b82f6', // Solid Blue
-                        borderRadius: 5, // Rounded Bars
+                        backgroundColor: '#3b82f6', 
+                        borderRadius: 5,
                         barPercentage: 0.6
                     }] 
                 }, 
                 options: { 
-                    indexAxis: 'y', // MAKES IT HORIZONTAL
+                    indexAxis: 'y', 
                     responsive: true, 
                     maintainAspectRatio: false,
                     scales: {
                         x: { beginAtZero: true, grid: { display: true } },
                         y: { grid: { display: false }, ticks: { autoSkip: true, maxTicksLimit: 15 } }
                     },
-                    plugins: {
-                        legend: { display: false }
-                    }
+                    plugins: { legend: { display: false } }
                 } 
             });
         }
 
-        // --- MAP LOGIC (AUTO-ZOOM) ---
-        if(data.chart_data.gps.length > 0) {
-            if(!map) initMap();
-            const lastPt = data.chart_data.gps[data.chart_data.gps.length - 1];
-            
-            // AUTO-FLY to the latest location
-            if(lastPt.lat != 0) {
-                map.flyTo([lastPt.lat, lastPt.lon], 16, { animate: true, duration: 1.5 });
-            }
-
-            let heatPoints = data.chart_data.gps.map((pt, i) => [pt.lat, pt.lon, Math.min(1.0, data.chart_data.aqi[i] / 200)]);
-            if(heatLayer) map.removeLayer(heatLayer);
-            heatLayer = L.heatLayer(heatPoints, {radius: 25, blur: 15, maxZoom: 18}).addTo(map);
-        }
         document.getElementById('esp-console').innerHTML = data.esp32_log.join('<br>');
     }
 </script>
@@ -437,6 +471,7 @@ def home(): return render_template_string(HTML_HEAD + HTML_STYLE + HTML_BODY + H
 @app.route('/api/data')
 def get_data(): 
     current_data['history'] = history_log
+    current_data['historical_stats'] = historical_stats
     return jsonify(current_data)
 
 @app.route('/upload', methods=['POST'])
@@ -451,10 +486,9 @@ def upload_file():
         for c in ['pm1','pm25','pm10','temp','hum','lat','lon']: 
             if c not in df.columns: df[c] = 0
         
-        # --- FIXED UPLOAD LOGIC ---
         valid_rows = []
         last_added = None
-        for i, r in df.head(100).iterrows(): # Limit 100 points
+        for i, r in df.head(100).iterrows(): 
             if r['lat'] == 0 or r['lon'] == 0: continue
             
             is_duplicate = False
@@ -462,7 +496,6 @@ def upload_file():
                 if abs(r['lat'] - last_added['lat']) < 0.0001 and abs(r['lon'] - last_added['lon']) < 0.0001:
                     is_duplicate = True
             
-            # Allow filtered points
             if not is_duplicate:
                 valid_rows.append(r)
                 last_added = r
@@ -480,7 +513,19 @@ def upload_file():
             aqis.append(int((r['pm25']*2)+(r['pm10']*0.5)))
             gps.append({"lat":r['lat'], "lon":r['lon']})
             
-        history_log.insert(0, {"date":dt, "filename":f.filename, "status":"Success"})
+        # --- NEW HISTORY LOGIC ---
+        history_log.insert(0, {"date":dt, "filename":f.filename, "status":"Success", "aqi": aqi})
+        
+        # Save to Historical Stats for Comparison Tab
+        # Check if date already exists and replace, or append
+        existing_record = next((item for item in historical_stats if item["date"] == dt), None)
+        if existing_record:
+            existing_record['aqi'] = aqi # Update existing date with new upload
+        else:
+            historical_stats.append({"date": dt, "aqi": aqi, "pm25": avgs['pm25']})
+            
+        # Sort history by date
+        historical_stats.sort(key=lambda x: x['date'])
         
         current_data.update({
             "aqi": aqi, "location_name": loc, 
