@@ -7,7 +7,7 @@ import random
 # Safe Import for Geopy
 try:
     from geopy.geocoders import Nominatim
-    geolocator = Nominatim(user_agent=f"skysense_final_v116_{random.randint(1000,9999)}")
+    geolocator = Nominatim(user_agent=f"skysense_final_v118_{random.randint(1000,9999)}")
 except ImportError:
     geolocator = None
 
@@ -23,6 +23,22 @@ current_data = {
     "esp32_log": ["> System Initialized...", "> Ready for connection..."],
     "last_updated": "Never"
 }
+
+# --- HELPER: CHECK IF DRONE MOVED ---
+def has_moved(lat, lon):
+    # Get the last recorded point
+    gps_list = current_data['chart_data']['gps']
+    if not gps_list: return True # First point is always accepted
+    
+    last_pt = gps_list[-1]
+    
+    # Calculate simple distance difference
+    # 0.0001 degrees is roughly 11 meters
+    lat_diff = abs(lat - last_pt['lat'])
+    lon_diff = abs(lon - last_pt['lon'])
+    
+    # If moved more than ~10m, return True
+    return (lat_diff > 0.0001 or lon_diff > 0.0001)
 
 # --- ROBUST FILE READER ---
 def read_file_safely(file):
@@ -63,92 +79,28 @@ def get_city_name(lat, lon):
     except: pass
     return formatted_coords
 
-# --- NEW DYNAMIC HEALTH LOGIC (5 LEVELS) ---
+# --- DYNAMIC HEALTH LOGIC (5 LEVELS) ---
 def calc_health(val):
-    # Calculate AQI from PM values if not present
     pm25 = val.get('pm25', 0)
     pm10 = val.get('pm10', 0)
-    
-    # Rough AQI calculation
     aqi = int((pm25 * 2) + (pm10 * 0.5))
-    
     risks = []
     
-    # LEVEL 1: GOOD (0-50)
     if aqi <= 50:
-        risks.append({
-            "name": "General Health",
-            "desc": "Air quality is considered satisfactory, and air pollution poses little or no risk.",
-            "prob": 5, "level": "Good",
-            "recs": ["Ventilation: It is safe to open windows.", "Activities: Enjoy outdoor sports without restriction.", "No masks needed today."]
-        })
-        risks.append({
-            "name": "Respiratory Impact",
-            "desc": "Ideal conditions. No respiratory irritation or discomfort is expected for any group.",
-            "prob": 5, "level": "Low",
-            "recs": ["Perfect weather for running or cycling.", "Visibility is clear and particle pollution is low."]
-        })
-
-    # LEVEL 2: MODERATE (51-100)
+        risks.append({ "name": "General Health", "desc": "Air quality is satisfactory.", "prob": 5, "level": "Good", "recs": ["Ventilation safe.", "Enjoy outdoors."] })
+        risks.append({ "name": "Respiratory Impact", "desc": "Ideal conditions.", "prob": 5, "level": "Low", "recs": ["Perfect for exercise.", "Visibility clear."] })
     elif aqi <= 100:
-        risks.append({
-            "name": "Sensitive Groups",
-            "desc": "Air quality is acceptable; however, there may be a concern for some people who are unusually sensitive.",
-            "prob": 40, "level": "Moderate",
-            "recs": ["People with asthma should reduce prolonged outdoor exertion.", "Watch for coughing or shortness of breath."]
-        })
-        risks.append({
-            "name": "General Population",
-            "desc": "Air quality is acceptable for the general public. Long-term exposure is generally safe.",
-            "prob": 20, "level": "Low",
-            "recs": ["Keep windows open, but close them if traffic is heavy nearby.", "No specific mask requirements for healthy adults."]
-        })
-
-    # LEVEL 3: UNHEALTHY FOR SENSITIVE GROUPS (101-150)
+        risks.append({ "name": "Sensitive Groups", "desc": "Minor concern for sensitive people.", "prob": 40, "level": "Moderate", "recs": ["Asthmatics reduce exertion.", "Monitor breathing."] })
+        risks.append({ "name": "General Population", "desc": "Acceptable for general public.", "prob": 20, "level": "Low", "recs": ["Keep windows open.", "No masks needed."] })
     elif aqi <= 150:
-        risks.append({
-            "name": "Sensitive Groups Impact",
-            "desc": "Members of sensitive groups (children, elderly, asthmatics) may experience health effects.",
-            "prob": 70, "level": "High",
-            "recs": ["Reduce prolonged or heavy exertion outdoors.", "Wear a mask if you have respiratory issues.", "Keep medicine/inhalers close by."]
-        })
-        risks.append({
-            "name": "General Health",
-            "desc": "The general public is less likely to be affected but may feel slight fatigue.",
-            "prob": 40, "level": "Moderate",
-            "recs": ["Close windows during peak traffic hours.", "Limit strenuous outdoor activities."]
-        })
-
-    # LEVEL 4: UNHEALTHY (151-200)
+        risks.append({ "name": "Sensitive Groups Impact", "desc": "Children/Elderly at risk.", "prob": 70, "level": "High", "recs": ["Reduce outdoor exertion.", "Wear masks if sensitive."] })
+        risks.append({ "name": "General Health", "desc": "Slight fatigue possible.", "prob": 40, "level": "Moderate", "recs": ["Close windows in traffic.", "Limit heavy activity."] })
     elif aqi <= 200:
-        risks.append({
-            "name": "Health Alert",
-            "desc": "Everyone may begin to experience health effects; members of sensitive groups may experience more serious health effects.",
-            "prob": 90, "level": "High",
-            "recs": ["Avoid heavy outdoor exertion.", "Wear an N95 mask if you must go outside.", "Use an air purifier indoors."]
-        })
-        risks.append({
-            "name": "Respiratory Stress",
-            "desc": "Increased aggravation of heart or lung disease. Coughing and throat irritation likely for everyone.",
-            "prob": 85, "level": "High",
-            "recs": ["Keep windows and doors closed.", "Drink plenty of water to hydrate airways."]
-        })
-
-    # LEVEL 5: HAZARDOUS (201+)
+        risks.append({ "name": "Health Alert", "desc": "Everyone may feel effects.", "prob": 90, "level": "High", "recs": ["Avoid outdoor exertion.", "Wear N95 mask.", "Use air purifier."] })
+        risks.append({ "name": "Respiratory Stress", "desc": "Heart/Lung aggravation likely.", "prob": 85, "level": "High", "recs": ["Seal home.", "Hydrate airways."] })
     else:
-        risks.append({
-            "name": "EMERGENCY WARNING",
-            "desc": "Health warnings of emergency conditions. The entire population is more likely to be affected.",
-            "prob": 100, "level": "Critical",
-            "recs": ["Stay Indoors: Do not go outside unless absolutely necessary.", "Purify Air: Run air purifiers on high speed.", "Seal all window gaps with tape or towels."]
-        })
-        risks.append({
-            "name": "Severe Toxicity",
-            "desc": "Serious risk of heart attacks, strokes, and respiratory failure. Visibility severely impacted.",
-            "prob": 100, "level": "Critical",
-            "recs": ["Seek medical help immediately if you experience chest pain.", "Wear N95/N99 masks even for short trips outdoors."]
-        })
-
+        risks.append({ "name": "EMERGENCY WARNING", "desc": "Emergency conditions.", "prob": 100, "level": "Critical", "recs": ["Stay Indoors!", "Run purifiers on High.", "Seal windows."] })
+        risks.append({ "name": "Severe Toxicity", "desc": "Risk of heart/lung failure.", "prob": 100, "level": "Critical", "recs": ["Seek medical help for chest pain.", "Wear N99 masks."] })
     return risks
 
 # --- HTML PARTS ---
@@ -171,31 +123,25 @@ HTML_STYLE = """
         * { box-sizing: border-box; margin: 0; padding: 0; }
         body { font-family: 'Inter', sans-serif; background: var(--bg); color: var(--text-main); padding: 40px 20px; }
         .container { max-width: 1200px; margin: 0 auto; }
-        
         .header { display: flex; justify-content: space-between; align-items: center; margin-bottom: 30px; }
         .logo { font-size: 1.8rem; font-weight: 800; color: var(--text-main); letter-spacing: -0.5px; display:flex; align-items:center; gap:10px; }
         .refresh-btn { background: #e5e5e5; color: var(--text-main); border: none; padding: 10px 20px; border-radius: 30px; font-weight: 600; cursor: pointer; transition: 0.2s; }
         .alert-banner { background: #fff7ed; border: 1px solid #ffedd5; color: #9a3412; padding: 20px; border-radius: 12px; margin-bottom: 30px; display:flex; align-items:center; gap:15px; }
-        
         .nav-tabs { display: flex; gap: 10px; background: white; padding: 8px; border-radius: 50px; margin-bottom: 30px; border: 1px solid var(--border); width: fit-content; box-shadow: 0 2px 5px rgba(0,0,0,0.05); }
         .tab-btn { border: none; background: transparent; padding: 10px 24px; font-weight: 600; color: var(--text-muted); cursor: pointer; border-radius: 30px; transition: 0.2s; font-size: 0.9rem; }
         .tab-btn.active { background: var(--primary); color: white; }
-        
         .section { display: none; animation: fadeIn 0.3s ease; }
         .section.active { display: block; }
         @keyframes fadeIn { from { opacity: 0; transform: translateY(5px); } to { opacity: 1; transform: translateY(0); } }
-        
         .dashboard-grid { display: grid; grid-template-columns: 1.2fr 1fr; gap: 25px; }
         .card { background: var(--card-bg); border-radius: 20px; padding: 30px; box-shadow: 0 4px 6px -1px rgba(0,0,0,0.02); border: 1px solid var(--border); height: 100%; }
         .card-header { display: flex; justify-content: space-between; align-items: center; margin-bottom: 25px; }
         .card-title { font-size: 1.1rem; font-weight: 700; color: var(--text-main); }
-        
         .aqi-num { font-size: 5rem; font-weight: 800; color: var(--danger); line-height: 1; text-align: center; }
         .aqi-sub { text-align: center; color: var(--text-muted); margin-top: 10px; font-weight: 500; }
         .stat-row { display: flex; gap: 15px; margin-top: 30px; }
         .stat-box { flex: 1; background: #fafaf9; padding: 15px; border-radius: 12px; text-align: center; }
         .stat-val { font-size: 1.5rem; font-weight: 800; color: var(--text-main); }
-        
         .health-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 20px; }
         @media(max-width: 800px) { .health-grid { grid-template-columns: 1fr; } }
         .risk-card { background: white; border: 1px solid var(--border); border-radius: 16px; padding: 25px; border-left: 5px solid var(--danger); }
@@ -210,18 +156,13 @@ HTML_STYLE = """
         .rec-list { list-style: none; font-size: 0.9rem; color: var(--text-main); padding-left: 0; }
         .rec-list li { margin-bottom: 5px; position: relative; padding-left: 15px; }
         .rec-list li::before { content: "•"; color: var(--primary); font-weight: bold; position: absolute; left: 0; }
-        
         .upload-card { display:block; text-align:center; padding: 40px; border: 2px dashed #d6d3d1; border-radius: 20px; background: #fafaf9; cursor: pointer; transition: 0.2s; }
         .upload-card:hover { border-color: var(--primary); background: #f0fdf4; }
         .upload-icon { font-size: 3rem; color: #d6d3d1; margin-bottom: 15px; transition:0.2s; }
         .upload-card:hover .upload-icon { color: var(--primary); }
         .date-picker { width:100%; padding:15px; border:1px solid #e7e5e4; border-radius:12px; font-size:1rem; margin-bottom:20px; font-family:'Inter',sans-serif; }
-        
         #map-container { height: 450px; width: 100%; border-radius: 16px; z-index: 1; }
-        
         .btn-primary { display:inline-block; background:#0f172a; color:white; padding:12px 25px; border-radius:8px; text-decoration:none; margin-right:10px; border:none; cursor:pointer; font-weight:600; font-size:0.9rem; }
-        .btn-outline { display:inline-block; background:transparent; color:#0f172a; padding:12px 25px; border-radius:8px; text-decoration:none; border:2px solid #0f172a; font-weight:600; font-size:0.9rem; cursor:pointer; }
-        
         .history-table { width: 100%; border-collapse: collapse; margin-top: 15px; }
         .history-table th { text-align: left; padding: 12px; border-bottom: 2px solid #e7e5e4; color: var(--text-muted); font-size: 0.85rem; text-transform: uppercase; }
         .history-table td { padding: 15px 12px; border-bottom: 1px solid #e7e5e4; color: var(--text-main); font-size: 0.95rem; }
@@ -480,16 +421,36 @@ def upload_file():
         for c in ['pm1','pm25','pm10','temp','hum','lat','lon']: 
             if c not in df.columns: df[c] = 0
         
-        avgs = {k: round(df[k].mean(), 1) for k in ['pm1','pm25','pm10','temp','hum']}
+        # --- FIXED UPLOAD LOGIC: Filter duplicates ---
+        valid_rows = []
+        last_added = None
+        for i, r in df.head(100).iterrows(): # Limit 100 points
+            if r['lat'] == 0 or r['lon'] == 0: continue
+            
+            # Simple distance check (approx 10m)
+            is_duplicate = False
+            if last_added is not None:
+                if abs(r['lat'] - last_added['lat']) < 0.0001 and abs(r['lon'] - last_added['lon']) < 0.0001:
+                    is_duplicate = True
+            
+            if not is_duplicate:
+                valid_rows.append(r)
+                last_added = r
+
+        # Calculate averages from filtered data
+        if not valid_rows: raise ValueError("No valid GPS data found in file")
+        
+        filtered_df = pd.DataFrame(valid_rows)
+        avgs = {k: round(filtered_df[k].mean(), 1) for k in ['pm1','pm25','pm10','temp','hum']}
         aqi = int((avgs['pm25']*2) + (avgs['pm10']*0.5))
-        valid = df[df['lat']!=0]
-        loc = get_city_name(valid.iloc[0]['lat'], valid.iloc[0]['lon']) if not valid.empty else "No GPS"
+        
+        loc = get_city_name(valid_rows[0]['lat'], valid_rows[0]['lon'])
+        
         gps, aqis = [], []
-        for i, r in df.head(50).iterrows():
+        for r in valid_rows:
             aqis.append(int((r['pm25']*2)+(r['pm10']*0.5)))
             gps.append({"lat":r['lat'], "lon":r['lon']})
             
-        # Update History
         history_log.insert(0, {"date":dt, "filename":f.filename, "status":"Success"})
         
         current_data.update({
@@ -514,10 +475,16 @@ def sensor():
         current_data['health_risks'] = calc_health(current_data)
         current_data['location_name'] = get_city_name(d.get('lat',0), d.get('lon',0))
         current_data['last_updated'] = datetime.datetime.now().strftime("%H:%M")
-        current_data['chart_data']['aqi'].append(aqi)
-        current_data['chart_data']['gps'].append({"lat":d.get('lat',0),"lon":d.get('lon',0)})
-        if len(current_data['chart_data']['aqi'])>50: 
-            current_data['chart_data']['aqi'].pop(0); current_data['chart_data']['gps'].pop(0)
+        
+        # --- FIXED SENSOR LOGIC: Only add if moved ---
+        if has_moved(d.get('lat',0), d.get('lon',0)) and d.get('lat',0) != 0:
+            current_data['chart_data']['aqi'].append(aqi)
+            current_data['chart_data']['gps'].append({"lat":d.get('lat',0),"lon":d.get('lon',0)})
+            # Limit array size
+            if len(current_data['chart_data']['aqi']) > 50: 
+                current_data['chart_data']['aqi'].pop(0)
+                current_data['chart_data']['gps'].pop(0)
+        
         current_data['esp32_log'].insert(0, f"> AQI:{aqi} | T:{d.get('temp')}")
         return jsonify({"status":"ok"})
     except Exception as e: return jsonify({"error":str(e)}), 400
