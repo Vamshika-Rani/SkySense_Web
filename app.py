@@ -7,7 +7,7 @@ import random
 # Safe Import for Geopy
 try:
     from geopy.geocoders import Nominatim
-    geolocator = Nominatim(user_agent=f"skysense_final_v118_{random.randint(1000,9999)}")
+    geolocator = Nominatim(user_agent=f"skysense_final_v120_{random.randint(1000,9999)}")
 except ImportError:
     geolocator = None
 
@@ -26,19 +26,11 @@ current_data = {
 
 # --- HELPER: CHECK IF DRONE MOVED ---
 def has_moved(lat, lon):
-    # Get the last recorded point
     gps_list = current_data['chart_data']['gps']
-    if not gps_list: return True # First point is always accepted
-    
+    if not gps_list: return True 
     last_pt = gps_list[-1]
-    
-    # Calculate simple distance difference
-    # 0.0001 degrees is roughly 11 meters
-    lat_diff = abs(lat - last_pt['lat'])
-    lon_diff = abs(lon - last_pt['lon'])
-    
-    # If moved more than ~10m, return True
-    return (lat_diff > 0.0001 or lon_diff > 0.0001)
+    # If moved more than ~5-10m
+    return (abs(lat - last_pt['lat']) > 0.0001 or abs(lon - last_pt['lon']) > 0.0001)
 
 # --- ROBUST FILE READER ---
 def read_file_safely(file):
@@ -218,15 +210,15 @@ HTML_BODY = """
 
     <div id="gps" class="section">
         <div class="card">
-            <div class="card-title">AQI Level vs GPS Location</div>
+            <div class="card-title">Live AQI Trend Line</div>
             <div style="height:400px; margin-top:20px;"><canvas id="mainChart"></canvas></div>
         </div>
     </div>
 
     <div id="heatmap" class="section">
         <div class="card">
-            <div class="card-title">Pollution Heatmap</div>
-            <p style="color:#78716c; font-size:0.9rem;">Scroll to zoom. Red areas indicate high pollution density.</p>
+            <div class="card-title">Pollution Heatmap (Auto-Zoom)</div>
+            <p style="color:#78716c; font-size:0.9rem;">Map automatically flies to drone location.</p>
             <div id="map-container" style="margin-top:20px;"></div>
         </div>
     </div>
@@ -377,20 +369,65 @@ HTML_SCRIPT = """
             });
         }
 
-        // CHART & MAP
+        // --- IMPROVED CHART (BEAUTIFUL LINE CHART) ---
         if(data.chart_data.aqi.length > 0) {
             const ctx = document.getElementById('mainChart').getContext('2d');
-            const labels = data.chart_data.gps.map(g => `${Number(g.lat).toFixed(3)}, ${Number(g.lon).toFixed(3)}`);
+            
+            // Generate Labels with CITY NAME
+            const labels = data.chart_data.gps.map((g, i) => {
+               // Show City only on every 5th label to avoid crowding, or if it's the last one
+               if (i % 5 === 0 || i === data.chart_data.gps.length - 1) {
+                   return `${data.location_name.split(',')[0]} (${Number(g.lat).toFixed(3)}, ${Number(g.lon).toFixed(3)})`;
+               }
+               return `${Number(g.lat).toFixed(3)}, ${Number(g.lon).toFixed(3)}`;
+            });
+
+            // Create Gradient
+            let gradient = ctx.createLinearGradient(0, 0, 0, 400);
+            gradient.addColorStop(0, 'rgba(14, 165, 233, 0.5)'); // Blue
+            gradient.addColorStop(1, 'rgba(14, 165, 233, 0.0)'); // Transparent
+
             if(mainChart) mainChart.destroy();
-            mainChart = new Chart(ctx, { type: 'bar', data: { labels: labels, datasets: [{ label: 'AQI', data: data.chart_data.aqi, backgroundColor: '#0f172a', borderRadius: 4 }] }, options: { responsive: true, maintainAspectRatio: false } });
+            mainChart = new Chart(ctx, { 
+                type: 'line', 
+                data: { 
+                    labels: labels, 
+                    datasets: [{ 
+                        label: 'AQI Level', 
+                        data: data.chart_data.aqi, 
+                        borderColor: '#0ea5e9',
+                        backgroundColor: gradient,
+                        borderWidth: 2,
+                        pointRadius: 3,
+                        pointBackgroundColor: '#fff',
+                        fill: true,
+                        tension: 0.4 // Smooth curves
+                    }] 
+                }, 
+                options: { 
+                    responsive: true, 
+                    maintainAspectRatio: false,
+                    scales: {
+                        x: { ticks: { maxRotation: 45, minRotation: 45, autoSkip: true, maxTicksLimit: 8 } },
+                        y: { beginAtZero: true }
+                    }
+                } 
+            });
         }
+
+        // --- IMPROVED MAP (AUTO-ZOOM) ---
         if(data.chart_data.gps.length > 0) {
             if(!map) initMap();
-            const firstPt = data.chart_data.gps[0];
-            if(firstPt.lat != 0) map.setView([firstPt.lat, firstPt.lon], 13);
+            const lastPt = data.chart_data.gps[data.chart_data.gps.length - 1];
+            
+            // AUTO-FLY to the latest location (Zoom Level 16 = Street View)
+            if(lastPt.lat != 0) {
+                map.flyTo([lastPt.lat, lastPt.lon], 16, { animate: true, duration: 1.5 });
+            }
+
             let heatPoints = data.chart_data.gps.map((pt, i) => [pt.lat, pt.lon, Math.min(1.0, data.chart_data.aqi[i] / 200)]);
             if(heatLayer) map.removeLayer(heatLayer);
-            heatLayer = L.heatLayer(heatPoints, {radius: 35, blur: 20, maxZoom: 15}).addTo(map);
+            heatLayer = L.heatLayer(heatPoints, {radius: 25, blur: 15, maxZoom: 18}).addTo(map);
         }
         document.getElementById('esp-console').innerHTML = data.esp32_log.join('<br>');
     }
@@ -426,18 +463,14 @@ def upload_file():
         last_added = None
         for i, r in df.head(100).iterrows(): # Limit 100 points
             if r['lat'] == 0 or r['lon'] == 0: continue
-            
-            # Simple distance check (approx 10m)
             is_duplicate = False
             if last_added is not None:
                 if abs(r['lat'] - last_added['lat']) < 0.0001 and abs(r['lon'] - last_added['lon']) < 0.0001:
                     is_duplicate = True
-            
             if not is_duplicate:
                 valid_rows.append(r)
                 last_added = r
 
-        # Calculate averages from filtered data
         if not valid_rows: raise ValueError("No valid GPS data found in file")
         
         filtered_df = pd.DataFrame(valid_rows)
@@ -480,7 +513,6 @@ def sensor():
         if has_moved(d.get('lat',0), d.get('lon',0)) and d.get('lat',0) != 0:
             current_data['chart_data']['aqi'].append(aqi)
             current_data['chart_data']['gps'].append({"lat":d.get('lat',0),"lon":d.get('lon',0)})
-            # Limit array size
             if len(current_data['chart_data']['aqi']) > 50: 
                 current_data['chart_data']['aqi'].pop(0)
                 current_data['chart_data']['gps'].pop(0)
