@@ -7,7 +7,8 @@ import random
 # Safe Import for Geopy
 try:
     from geopy.geocoders import Nominatim
-    geolocator = Nominatim(user_agent=f"skysense_final_v130_{random.randint(1000,9999)}")
+    # Random User Agent to prevent blocking
+    geolocator = Nominatim(user_agent=f"skysense_pro_v145_{random.randint(10000,99999)}")
 except ImportError:
     geolocator = None
 
@@ -15,7 +16,7 @@ app = Flask(__name__)
 
 # --- GLOBAL DATA ---
 history_log = [] 
-historical_stats = [] # Stores {date, aqi, pm25} for comparison
+historical_stats = [] 
 current_data = {
     "aqi": 0, "pm1": 0, "pm25": 0, "pm10": 0, "temp": 0, "hum": 0,
     "avg_aqi": 0, "avg_pm1": 0, "avg_pm25": 0, "avg_pm10": 0, "avg_temp": 0, "avg_hum": 0,
@@ -58,20 +59,41 @@ def normalize_columns(df):
         elif 'lon' in c or 'lng' in c: col_map[col] = 'lon'
     return df.rename(columns=col_map)
 
+# --- UPDATED: GET EXACT LOCATION NAME ---
 def get_city_name(lat, lon):
     if lat == 0 or lon == 0: return "No GPS Data"
-    formatted_coords = f"{round(lat, 4)}°N, {round(lon, 4)}°E"
-    if not geolocator: return formatted_coords
+    
+    # Default format if geocoding fails
+    coord_str = f"{round(lat, 4)}°N, {round(lon, 4)}°E"
+    
+    if not geolocator: return coord_str
+    
     try:
-        loc = geolocator.reverse(f"{lat}, {lon}", exactly_one=True, language='en', timeout=2)
-        if loc:
-            add = loc.raw.get('address', {})
-            city = add.get('suburb') or add.get('city') or add.get('town') or add.get('county')
-            if city: return city
-    except: pass
-    return formatted_coords
+        # Increased timeout to 5s for reliability
+        location = geolocator.reverse(f"{lat}, {lon}", exactly_one=True, language='en', timeout=5)
+        if location:
+            add = location.raw.get('address', {})
+            
+            # Prioritize "Exact Area" (Neighbourhood, Suburb, Road)
+            area = add.get('neighbourhood') or add.get('suburb') or add.get('residential') or add.get('road') or add.get('village')
+            
+            # Fallback to City/Town
+            city = add.get('city') or add.get('town') or add.get('county') or add.get('state_district')
+            
+            if area and city:
+                return f"{area}, {city}"
+            elif area:
+                return f"{area}"
+            elif city:
+                return f"{city}"
+            
+    except Exception as e:
+        print(f"Geocoding Error: {e}")
+        pass
+        
+    return coord_str
 
-# --- UPDATED DYNAMIC HEALTH LOGIC (STRICT TIERS) ---
+# --- DYNAMIC HEALTH LOGIC (6 STRICT LEVELS) ---
 def calc_health(val):
     pm25 = val.get('pm25', 0)
     pm10 = val.get('pm10', 0)
@@ -80,165 +102,45 @@ def calc_health(val):
     
     # LEVEL 1: AQI 0 - 100 (Safe)
     if aqi <= 100:
-        risks.append({
-            "name": "General Well-being",
-            "desc": "Air quality is considered satisfactory, and air pollution poses little or no risk.",
-            "prob": 5, "level": "Good",
-            "recs": ["It is a great day to be active outside.", "Ventilate your home freely.", "No special filtration needed."]
-        })
-        risks.append({
-            "name": "Respiratory Health",
-            "desc": "No irritation or respiratory distress expected for general population.",
-            "prob": 5, "level": "Good",
-            "recs": ["Continue normal outdoor exercises.", "Deep breathing exercises are safe.", "Enjoy the fresh air."]
-        })
-        risks.append({
-            "name": "Sensitive Groups",
-            "desc": "People with asthma or allergies can typically enjoy outdoor activities without issue.",
-            "prob": 10, "level": "Low",
-            "recs": ["Keep usual rescue inhalers just in case.", "Monitor local pollen if you have allergies.", "No masks required."]
-        })
-        risks.append({
-            "name": "Skin & Eye Health",
-            "desc": "Clear visibility and low particulate matter mean no irritation.",
-            "prob": 0, "level": "Low",
-            "recs": ["No protective eyewear needed.", "Standard skincare routine is sufficient.", "Sunscreen is your only concern today."]
-        })
+        risks.append({ "name": "General Well-being", "desc": "Air quality is satisfactory.", "prob": 5, "level": "Good", "recs": ["Active outdoors is safe.", "Ventilate home.", "No filters needed."] })
+        risks.append({ "name": "Respiratory Health", "desc": "No irritation expected.", "prob": 5, "level": "Good", "recs": ["Exercise freely.", "Deep breathing safe.", "Enjoy fresh air."] })
+        risks.append({ "name": "Sensitive Groups", "desc": "Safe for asthmatics.", "prob": 10, "level": "Low", "recs": ["Keep inhalers nearby.", "Monitor pollen.", "No masks."] })
+        risks.append({ "name": "Skin & Eye Health", "desc": "No irritation risks.", "prob": 0, "level": "Low", "recs": ["No eyewear needed.", "Standard skincare.", "Use sunscreen."] })
 
-    # LEVEL 2: AQI 101 - 200 (Moderate Risk)
+    # LEVEL 2: AQI 101 - 200 (Moderate)
     elif aqi <= 200:
-        risks.append({
-            "name": "Mild Respiratory Irritation",
-            "desc": "Sensitive individuals may experience coughing or throat irritation.",
-            "prob": 40, "level": "Moderate",
-            "recs": ["Limit prolonged outdoor exertion.", "Hydrate frequently to soothe throat.", "Carry water when walking outside."]
-        })
-        risks.append({
-            "name": "Asthma Aggravation",
-            "desc": "Air quality is acceptable for most, but may trigger mild asthma symptoms.",
-            "prob": 50, "level": "Moderate",
-            "recs": ["Keep inhalers accessible at all times.", "Avoid jogging near heavy traffic areas.", "Watch for wheezing symptoms."]
-        })
-        risks.append({
-            "name": "Sinus Pressure",
-            "desc": "Particulates may cause minor nasal congestion or sinus pressure.",
-            "prob": 30, "level": "Moderate",
-            "recs": ["Consider a saline nasal rinse.", "Shower after coming indoors to wash off dust.", "Keep windows closed during traffic hours."]
-        })
-        risks.append({
-            "name": "Fatigue Levels",
-            "desc": "Slight reduction in oxygen efficiency may cause quicker tiredness during sports.",
-            "prob": 25, "level": "Low",
-            "recs": ["Take more breaks during exercise.", "Avoid heavy cardio outdoors.", "Monitor heart rate during activity."]
-        })
+        risks.append({ "name": "Mild Irritation", "desc": "Coughing/throat irritation possible.", "prob": 40, "level": "Moderate", "recs": ["Limit prolonged exertion.", "Hydrate throat.", "Carry water."] })
+        risks.append({ "name": "Asthma Risk", "desc": "May trigger mild symptoms.", "prob": 50, "level": "Moderate", "recs": ["Inhalers accessible.", "Avoid heavy traffic.", "Watch for wheezing."] })
+        risks.append({ "name": "Sinus Pressure", "desc": "Minor nasal congestion.", "prob": 30, "level": "Moderate", "recs": ["Saline rinse.", "Shower after outdoors.", "Close windows."] })
+        risks.append({ "name": "Fatigue", "desc": "Quicker tiredness during sports.", "prob": 25, "level": "Low", "recs": ["Take breaks.", "Avoid heavy cardio.", "Monitor heart rate."] })
 
-    # LEVEL 3: AQI 201 - 300 (Poor / Very Unhealthy)
+    # LEVEL 3: AQI 201 - 300 (Poor)
     elif aqi <= 300:
-        risks.append({
-            "name": "Bronchitis Risk",
-            "desc": "High PM levels can inflame the bronchial tubes causing heavy coughing.",
-            "prob": 65, "level": "High",
-            "recs": ["Avoid all outdoor physical activity.", "Wear a basic mask (N95 preferred) outside.", "Use an air purifier in the bedroom."]
-        })
-        risks.append({
-            "name": "Cardiac Stress",
-            "desc": "Fine particles entering the bloodstream can slightly elevate blood pressure.",
-            "prob": 50, "level": "High",
-            "recs": ["People with heart conditions should stay indoors.", "Avoid salty foods to keep BP low.", "Monitor blood pressure if you feel dizzy."]
-        })
-        risks.append({
-            "name": "Allergic Rhinitis",
-            "desc": "High pollution can mimic or worsen severe allergy symptoms.",
-            "prob": 70, "level": "High",
-            "recs": ["Take antihistamines if prescribed.", "Keep windows sealed tight.", "Change clothes immediately after entering home."]
-        })
-        risks.append({
-            "name": "Eye Irritation",
-            "desc": "Dust and chemicals in the air may cause burning or watery eyes.",
-            "prob": 60, "level": "Moderate",
-            "recs": ["Use lubricating eye drops.", "Wear sunglasses/glasses to block dust.", "Avoid rubbing eyes with unwashed hands."]
-        })
+        risks.append({ "name": "Bronchitis Risk", "desc": "Inflamed bronchial tubes.", "prob": 65, "level": "High", "recs": ["Avoid outdoor activity.", "Wear N95 mask.", "Use air purifier."] })
+        risks.append({ "name": "Cardiac Stress", "desc": "Elevated blood pressure.", "prob": 50, "level": "High", "recs": ["Heart patients stay in.", "Avoid salty food.", "Monitor BP."] })
+        risks.append({ "name": "Allergies", "desc": "Worsened allergy symptoms.", "prob": 70, "level": "High", "recs": ["Take antihistamines.", "Seal windows.", "Change clothes."] })
+        risks.append({ "name": "Eye Irritation", "desc": "Burning or watery eyes.", "prob": 60, "level": "Moderate", "recs": ["Use eye drops.", "Wear sunglasses.", "Don't rub eyes."] })
 
     # LEVEL 4: AQI 301 - 400 (Severe)
     elif aqi <= 400:
-        risks.append({
-            "name": "Acute Respiratory Infection",
-            "desc": "Immune system in lungs is compromised, increasing risk of infections.",
-            "prob": 80, "level": "Severe",
-            "recs": ["Strictly avoid outdoor exposure.", "Wear N95/N99 masks if transit is necessary.", "Steam inhalation twice a day."]
-        })
-        risks.append({
-            "name": "Ischemic Heart Risk",
-            "desc": "Reduced oxygen supply to the heart due to pollution stress.",
-            "prob": 75, "level": "Severe",
-            "recs": ["Elderly should remain strictly indoors.", "Avoid any strenuous physical labor.", "Seek help if experiencing chest heaviness."]
-        })
-        risks.append({
-            "name": "Hypoxia Symptoms",
-            "desc": "Lower oxygen intake may lead to headaches and dizziness.",
-            "prob": 60, "level": "High",
-            "recs": ["Use indoor plants or oxygen concentrators if available.", "Practice shallow, calm breathing.", "Avoid smoking or incense indoors."]
-        })
-        risks.append({
-            "name": "Pneumonia Susceptibility",
-            "desc": "Lungs are highly vulnerable to bacterial and viral attacks.",
-            "prob": 50, "level": "High",
-            "recs": ["Maintain good hand hygiene.", "Stay away from crowded, dusty places.", "Consult a doctor for persistent cough."]
-        })
+        risks.append({ "name": "Lung Infection", "desc": "High infection risk.", "prob": 80, "level": "Severe", "recs": ["Strictly avoid outdoors.", "Wear N99 mask.", "Steam inhalation."] })
+        risks.append({ "name": "Ischemic Risk", "desc": "Reduced heart oxygen.", "prob": 75, "level": "Severe", "recs": ["Elderly stay inside.", "No physical labor.", "Watch chest pain."] })
+        risks.append({ "name": "Hypoxia", "desc": "Headaches/Dizziness.", "prob": 60, "level": "High", "recs": ["Use oxygen/plants.", "Calm breathing.", "No smoking."] })
+        risks.append({ "name": "Pneumonia", "desc": "Vulnerable to bacteria.", "prob": 50, "level": "High", "recs": ["Wash hands often.", "Avoid crowds.", "Consult doctor."] })
 
     # LEVEL 5: AQI 401 - 500 (Hazardous)
     elif aqi <= 500:
-        risks.append({
-            "name": "Severe Lung Impairment",
-            "desc": "Healthy people will experience reduced endurance and breathing difficulty.",
-            "prob": 90, "level": "Critical",
-            "recs": ["Do not go outside under any circumstances.", "Seal window gaps with wet towels.", "Run air purifiers on maximum speed."]
-        })
-        risks.append({
-            "name": "Cerebrovascular Risk",
-            "desc": "Increased risk of stroke due to thickened blood and inflammation.",
-            "prob": 60, "level": "High",
-            "recs": ["Stay hydrated to keep blood thin.", "Avoid stress and sudden movements.", "Keep emergency contacts ready."]
-        })
-        risks.append({
-            "name": "Systemic Inflammation",
-            "desc": "Pollutants entering blood trigger inflammation throughout the body.",
-            "prob": 85, "level": "Critical",
-            "recs": ["Consume anti-inflammatory foods (turmeric, berries).", "Rest as much as possible.", "Avoid cooking that produces smoke (frying)."]
-        })
-        risks.append({
-            "name": "Pulmonary Edema Risk",
-            "desc": "Fluid buildup in air sacs due to toxic chemical irritation.",
-            "prob": 40, "level": "Severe",
-            "recs": ["Seek immediate medical care for difficulty breathing.", "Sleep with head elevated.", "Avoid lying flat if breathing is hard."]
-        })
+        risks.append({ "name": "Lung Impairment", "desc": "Breathing difficulty.", "prob": 90, "level": "Critical", "recs": ["Do not go out.", "Wet towels on windows.", "Max air purifier."] })
+        risks.append({ "name": "Stroke Risk", "desc": "Thickened blood.", "prob": 60, "level": "High", "recs": ["Hydrate heavily.", "Avoid stress.", "Emergency contacts ready."] })
+        risks.append({ "name": "Inflammation", "desc": "Systemic body inflammation.", "prob": 85, "level": "Critical", "recs": ["Anti-inflammatory food.", "Rest fully.", "No frying food."] })
+        risks.append({ "name": "Pulmonary Edema", "desc": "Fluid in lungs.", "prob": 40, "level": "Severe", "recs": ["Medical care if breathing hard.", "Sleep elevated.", "Don't lie flat."] })
 
-    # LEVEL 6: AQI 500+ (Emergency / Toxic)
+    # LEVEL 6: AQI 500+ (Emergency)
     else:
-        risks.append({
-            "name": "Acute Respiratory Distress (ARDS)",
-            "desc": "Life-threatening lung failure potential. Oxygen absorption is blocked.",
-            "prob": 95, "level": "Emergency",
-            "recs": ["Evacuate to a cleaner area if possible.", "Use medical-grade oxygen if prescribed.", "Wear N99/P100 respirator if movement is forced."]
-        })
-        risks.append({
-            "name": "Cardiac Arrest Risk",
-            "desc": "Extremely high stress on heart muscles due to toxic air.",
-            "prob": 70, "level": "Emergency",
-            "recs": ["Absolute bed rest suggested for patients.", "Keep defibrillator/emergency services on speed dial.", "Do not exert yourself in any way."]
-        })
-        risks.append({
-            "name": "Asphyxiation Hazard",
-            "desc": "Air is chemically toxic. Feeling of choking or suffocation.",
-            "prob": 90, "level": "Emergency",
-            "recs": ["Create a 'clean room' with no ventilation leaks.", "Use double-filtration air purifiers.", "Limit talking to conserve oxygen."]
-        })
-        risks.append({
-            "name": "Permanent Lung Damage",
-            "desc": "Long-term scarring of lung tissue (Fibrosis) possible even after short exposure.",
-            "prob": 80, "level": "Critical",
-            "recs": ["Follow up with a pulmonologist immediately.", "Start long-term lung detox measures.", "Consider relocation if conditions persist."]
-        })
+        risks.append({ "name": "ARDS", "desc": "Lung failure potential.", "prob": 95, "level": "Emergency", "recs": ["Evacuate area.", "Medical oxygen.", "N99 respirator."] })
+        risks.append({ "name": "Cardiac Arrest", "desc": "Extreme heart stress.", "prob": 70, "level": "Emergency", "recs": ["Bed rest.", "Defibrillator ready.", "No exertion."] })
+        risks.append({ "name": "Asphyxiation", "desc": "Toxic choking feeling.", "prob": 90, "level": "Emergency", "recs": ["Create clean room.", "Double filtration.", "Limit talking."] })
+        risks.append({ "name": "Lung Damage", "desc": "Permanent scarring risk.", "prob": 80, "level": "Critical", "recs": ["See pulmonologist.", "Lung detox.", "Relocate."] })
 
     return risks
 
@@ -306,7 +208,6 @@ HTML_STYLE = """
         .history-table td { padding: 15px 12px; border-bottom: 1px solid #e7e5e4; color: var(--text-main); font-size: 0.95rem; }
         .history-table tr:last-child td { border-bottom: none; }
         .status-badge { padding: 4px 10px; border-radius: 20px; font-size: 0.75rem; font-weight: 700; background: #dcfce7; color: #166534; }
-        
         .filter-btn { padding: 8px 16px; border: 1px solid #e7e5e4; background: white; border-radius: 20px; cursor: pointer; margin-right: 5px; font-weight: 500; font-size: 0.85rem; }
         .filter-btn.active { background: var(--primary); color: white; border-color: var(--primary); }
     </style>
@@ -437,14 +338,13 @@ HTML_SCRIPT = """
 <script>
     let mainChart = null;
     let trendChart = null;
-    let rawHistory = []; // Stores loaded history data
+    let rawHistory = [];
 
     function sw(id) {
         document.querySelectorAll('.section').forEach(e => e.classList.remove('active'));
         document.getElementById(id).classList.add('active');
         document.querySelectorAll('.tab-btn').forEach(e => e.classList.remove('active'));
         document.querySelector(`button[onclick="sw('${id}')"]`).classList.add('active');
-        // If switching to analytics, force render
         if(id === 'analytics') updateTrend(7); 
     }
 
@@ -540,21 +440,16 @@ HTML_SCRIPT = """
         
         document.getElementById('alert-msg').innerText = `${aqiStatus} (AQI: ${data.aqi})`;
 
-        // HEALTH REPORTS (UPDATED)
+        // HEALTH REPORTS
         const grid = document.getElementById('full-health-grid');
         const miniList = document.getElementById('mini-risk-list');
         if(data.health_risks.length > 0) {
             grid.innerHTML = ''; miniList.innerHTML = '';
             data.health_risks.forEach(r => {
                 let color, badgeColor, badgeText;
-                
-                if(r.level === 'Good' || r.level === 'Low') {
-                     color='#16a34a'; badgeColor='#dcfce7'; badgeText='#166534';
-                } else if(r.level === 'Moderate') {
-                     color='#ea580c'; badgeColor='#ffedd5'; badgeText='#9a3412';
-                } else {
-                     color='#dc2626'; badgeColor='#fee2e2'; badgeText='#991b1b';
-                }
+                if(r.level === 'Good' || r.level === 'Low') { color='#16a34a'; badgeColor='#dcfce7'; badgeText='#166534'; }
+                else if(r.level === 'Moderate') { color='#ea580c'; badgeColor='#ffedd5'; badgeText='#9a3412'; }
+                else { color='#dc2626'; badgeColor='#fee2e2'; badgeText='#991b1b'; }
                 
                 grid.innerHTML += `<div class="risk-card" style="border-left-color:${color}">
                     <div class="risk-header"><div class="risk-title">${r.name}</div><div class="risk-badge" style="background:${badgeColor}; color:${badgeText}">${r.level}</div></div>
@@ -575,10 +470,12 @@ HTML_SCRIPT = """
             });
         }
 
-        // HORIZONTAL BAR CHART
+        // --- UPDATED CHART LABELS (WITH CITY NAME) ---
         if(data.chart_data.aqi.length > 0) {
             const ctx = document.getElementById('mainChart').getContext('2d');
             const labels = data.chart_data.gps.map((g, i) => {
+               // Show Exact Location + Coordinates
+               // Uses data.location_name which now includes the exact area/neighborhood
                return `${data.location_name.split(',')[0]} (${Number(g.lat).toFixed(3)}, ${Number(g.lon).toFixed(3)})`;
             });
 
@@ -658,6 +555,7 @@ def upload_file():
         avgs = {k: round(filtered_df[k].mean(), 1) for k in ['pm1','pm25','pm10','temp','hum']}
         aqi = int((avgs['pm25']*2) + (avgs['pm10']*0.5))
         
+        # Get Exact Location
         loc = get_city_name(valid_rows[0]['lat'], valid_rows[0]['lon'])
         
         gps, aqis = [], []
