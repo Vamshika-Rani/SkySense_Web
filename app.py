@@ -1,4 +1,4 @@
-from flask import Flask, render_template_string, jsonify, request, send_from_directory
+from flask import Flask, render_template_string, jsonify, request, send_from_directory, send_file
 import pandas as pd
 import io
 import datetime
@@ -6,12 +6,12 @@ import random
 import os
 import time
 
-# Safe Import for Geopy with Retry Logic
+# Safe Import for Geopy
 try:
     from geopy.geocoders import Nominatim
     from geopy.exc import GeocoderTimedOut, GeocoderServiceError
-    # Unique User Agent to prevent blocking
-    geolocator = Nominatim(user_agent=f"skysense_monitor_app_{random.randint(10000,99999)}")
+    # Random User Agent prevents blocking
+    geolocator = Nominatim(user_agent=f"skysense_drone_{random.randint(10000,99999)}")
 except ImportError:
     geolocator = None
 
@@ -25,37 +25,33 @@ app.config['UPLOAD_FOLDER'] = UPLOAD_FOLDER
 # --- GLOBAL DATA ---
 history_log = [] 
 historical_stats = [] 
-location_cache = {} # Caches coords -> "City Name" to prevent API timeouts
+location_cache = {} 
 
 current_data = {
     "aqi": 0, "pm1": 0, "pm25": 0, "pm10": 0, "temp": 0, "hum": 0,
     "avg_aqi": 0, "avg_pm1": 0, "avg_pm25": 0, "avg_pm10": 0, "avg_temp": 0, "avg_hum": 0,
     "status": "Waiting...", "location_name": "Waiting for GPS...",
     "health_risks": [], "chart_data": {"aqi":[], "gps":[]},
-    "esp32_log": ["> System Initialized...", "> Ready for connection..."],
+    "esp32_log": ["> System Initialized...", "> Ready..."],
     "last_updated": "Never"
 }
 
-# --- HELPER: CHECK IF DRONE MOVED ---
+# --- HELPERS ---
 def has_moved(lat, lon):
     gps_list = current_data['chart_data']['gps']
     if not gps_list: return True 
     last_pt = gps_list[-1]
-    # Filter: Drone must move ~10 meters to record a new data point
     return (abs(lat - last_pt['lat']) > 0.0001 or abs(lon - last_pt['lon']) > 0.0001)
 
-# --- ROBUST FILE READER ---
 def read_file_safely(file):
     file.seek(0)
     try: return pd.read_csv(file)
     except: pass
     try: file.seek(0); return pd.read_csv(file, encoding='latin1')
     except: pass
-    try: file.seek(0); return pd.read_csv(file, sep=None, engine='python', encoding='utf-8', on_bad_lines='skip')
-    except: pass
     try: file.seek(0); return pd.read_excel(file)
     except: pass
-    raise ValueError("Could not read file. Please ensure it is a valid CSV or Excel file.")
+    raise ValueError("Invalid File Format")
 
 def normalize_columns(df):
     col_map = {}
@@ -66,93 +62,84 @@ def normalize_columns(df):
         elif 'pm10' in c: col_map[col] = 'pm10'
         elif 'temp' in c: col_map[col] = 'temp'
         elif 'hum' in c: col_map[col] = 'hum'
-        elif 'lat' in c or 'lal' in c: col_map[col] = 'lat'
-        elif 'lon' in c or 'lng' in c: col_map[col] = 'lon'
+        elif 'lat' in c: col_map[col] = 'lat'
+        elif 'lon' in c: col_map[col] = 'lon'
     return df.rename(columns=col_map)
 
-# --- UPDATED: ROBUST LOCATION FINDER WITH CACHE ---
+# --- ROBUST LOCATION FINDER (FIXED) ---
 def get_city_name(lat, lon):
     if lat == 0 or lon == 0: return "No GPS Signal"
     
-    # Create a cache key (round to 3 decimals = ~100m radius)
-    # This prevents spamming the API if the drone hovers in one area
+    # Cache key (rounded to prevent spamming same spot)
     cache_key = (round(lat, 3), round(lon, 3))
-    if cache_key in location_cache:
-        return location_cache[cache_key]
-
-    coord_str = f"{round(lat, 4)}°N, {round(lon, 4)}°E"
+    if cache_key in location_cache: return location_cache[cache_key]
+    
+    coord_str = f"{round(lat, 4)}, {round(lon, 4)}"
     if not geolocator: return coord_str
     
     try:
-        # Retry logic: Try 3 times if it times out
-        for attempt in range(3): 
+        # Retry logic
+        for _ in range(2): 
             try:
-                # Timeout 10s for slow responses
-                location = geolocator.reverse(f"{lat}, {lon}", exactly_one=True, language='en', timeout=10)
-                if location:
-                    add = location.raw.get('address', {})
+                # 10s timeout to allow slow responses
+                loc = geolocator.reverse(f"{lat}, {lon}", exactly_one=True, language='en', timeout=10)
+                if loc:
+                    add = loc.raw.get('address', {})
                     # Prioritize specific areas
-                    area = add.get('neighbourhood') or add.get('suburb') or add.get('residential') or add.get('road') or add.get('village')
-                    city = add.get('city') or add.get('town') or add.get('county') or add.get('state_district')
+                    area = add.get('neighbourhood') or add.get('suburb') or add.get('residential') or add.get('road')
+                    city = add.get('city') or add.get('town') or add.get('county')
                     
-                    result = coord_str # Default
-                    if area and city: result = f"{area}, {city}"
-                    elif area: result = f"{area}"
-                    elif city: result = f"{city}"
+                    res = coord_str
+                    if area and city: res = f"{area}, {city}"
+                    elif area: res = f"{area}"
+                    elif city: res = f"{city}"
                     
-                    # Save to cache if successful
-                    location_cache[cache_key] = result
-                    return result
-            except (GeocoderTimedOut, GeocoderServiceError):
-                time.sleep(1) # Wait 1s before retry
-                continue
-                
-    except Exception as e:
-        print(f"Geo Error: {e}")
-        pass
-        
+                    location_cache[cache_key] = res
+                    return res
+            except: 
+                time.sleep(1) # Wait before retry
+    except: pass
+    
     return coord_str
 
-# --- DYNAMIC HEALTH LOGIC (6 STRICT LEVELS) ---
+# --- DYNAMIC HEALTH LOGIC (6 LEVELS) ---
 def calc_health(val):
-    pm25 = val.get('pm25', 0)
-    pm10 = val.get('pm10', 0)
-    aqi = int((pm25 * 2) + (pm10 * 0.5))
+    aqi = int((val.get('pm25', 0) * 2) + (val.get('pm10', 0) * 0.5))
     risks = []
     
     if aqi <= 100:
-        risks.append({ "name": "General Well-being", "desc": "Air quality is satisfactory.", "prob": 5, "level": "Good", "recs": ["Active outdoors is safe.", "Ventilate home.", "No filters needed."] })
-        risks.append({ "name": "Respiratory Health", "desc": "No irritation expected.", "prob": 5, "level": "Good", "recs": ["Exercise freely.", "Deep breathing safe.", "Enjoy fresh air."] })
-        risks.append({ "name": "Sensitive Groups", "desc": "Safe for asthmatics.", "prob": 10, "level": "Low", "recs": ["Keep inhalers nearby.", "Monitor pollen.", "No masks."] })
-        risks.append({ "name": "Skin & Eye Health", "desc": "No irritation risks.", "prob": 0, "level": "Low", "recs": ["No eyewear needed.", "Standard skincare.", "Use sunscreen."] })
+        risks = [{"name": "General Well-being", "desc": "Air quality is satisfactory.", "prob": 5, "level": "Good", "recs": ["Active outdoors is safe.", "Ventilate home.", "No filters needed."]},
+                 {"name": "Respiratory Health", "desc": "No irritation expected.", "prob": 5, "level": "Good", "recs": ["Exercise freely.", "Deep breathing safe.", "Enjoy fresh air."]},
+                 {"name": "Sensitive Groups", "desc": "Safe for asthmatics.", "prob": 10, "level": "Low", "recs": ["Keep inhalers nearby.", "Monitor pollen.", "No masks."]},
+                 {"name": "Skin & Eye Health", "desc": "No irritation risks.", "prob": 0, "level": "Low", "recs": ["No eyewear needed.", "Standard skincare.", "Use sunscreen."]}]
     elif aqi <= 200:
-        risks.append({ "name": "Mild Irritation", "desc": "Coughing/throat irritation possible.", "prob": 40, "level": "Moderate", "recs": ["Limit prolonged exertion.", "Hydrate throat.", "Carry water."] })
-        risks.append({ "name": "Asthma Risk", "desc": "May trigger mild symptoms.", "prob": 50, "level": "Moderate", "recs": ["Inhalers accessible.", "Avoid heavy traffic.", "Watch for wheezing."] })
-        risks.append({ "name": "Sinus Pressure", "desc": "Minor nasal congestion.", "prob": 30, "level": "Moderate", "recs": ["Saline rinse.", "Shower after outdoors.", "Close windows."] })
-        risks.append({ "name": "Fatigue", "desc": "Quicker tiredness during sports.", "prob": 25, "level": "Low", "recs": ["Take breaks.", "Avoid heavy cardio.", "Monitor heart rate."] })
+        risks = [{"name": "Mild Irritation", "desc": "Coughing/throat irritation.", "prob": 40, "level": "Moderate", "recs": ["Limit prolonged exertion.", "Hydrate throat.", "Carry water."]},
+                 {"name": "Asthma Risk", "desc": "May trigger mild symptoms.", "prob": 50, "level": "Moderate", "recs": ["Inhalers accessible.", "Avoid heavy traffic.", "Watch for wheezing."]},
+                 {"name": "Sinus Pressure", "desc": "Minor nasal congestion.", "prob": 30, "level": "Moderate", "recs": ["Saline rinse.", "Shower after outdoors.", "Close windows."]},
+                 {"name": "Fatigue", "desc": "Quicker tiredness.", "prob": 25, "level": "Low", "recs": ["Take breaks.", "Avoid heavy cardio.", "Monitor heart rate."]}]
     elif aqi <= 300:
-        risks.append({ "name": "Bronchitis Risk", "desc": "Inflamed bronchial tubes.", "prob": 65, "level": "High", "recs": ["Avoid outdoor activity.", "Wear N95 mask.", "Use air purifier."] })
-        risks.append({ "name": "Cardiac Stress", "desc": "Elevated blood pressure.", "prob": 50, "level": "High", "recs": ["Heart patients stay in.", "Avoid salty food.", "Monitor BP."] })
-        risks.append({ "name": "Allergies", "desc": "Worsened allergy symptoms.", "prob": 70, "level": "High", "recs": ["Take antihistamines.", "Seal windows.", "Change clothes."] })
-        risks.append({ "name": "Eye Irritation", "desc": "Burning or watery eyes.", "prob": 60, "level": "Moderate", "recs": ["Use eye drops.", "Wear sunglasses.", "Don't rub eyes."] })
+        risks = [{"name": "Bronchitis Risk", "desc": "Inflamed bronchial tubes.", "prob": 65, "level": "High", "recs": ["Avoid outdoor activity.", "Wear N95 mask.", "Use air purifier."]},
+                 {"name": "Cardiac Stress", "desc": "Elevated blood pressure.", "prob": 50, "level": "High", "recs": ["Heart patients stay in.", "Avoid salty food.", "Monitor BP."]},
+                 {"name": "Allergies", "desc": "Worsened allergy symptoms.", "prob": 70, "level": "High", "recs": ["Take antihistamines.", "Seal windows.", "Change clothes."]},
+                 {"name": "Eye Irritation", "desc": "Burning or watery eyes.", "prob": 60, "level": "Moderate", "recs": ["Use eye drops.", "Wear sunglasses.", "Don't rub eyes."]}]
     elif aqi <= 400:
-        risks.append({ "name": "Lung Infection", "desc": "High infection risk.", "prob": 80, "level": "Severe", "recs": ["Strictly avoid outdoors.", "Wear N99 mask.", "Steam inhalation."] })
-        risks.append({ "name": "Ischemic Risk", "desc": "Reduced heart oxygen.", "prob": 75, "level": "Severe", "recs": ["Elderly stay inside.", "No physical labor.", "Watch chest pain."] })
-        risks.append({ "name": "Hypoxia", "desc": "Headaches/Dizziness.", "prob": 60, "level": "High", "recs": ["Use oxygen/plants.", "Calm breathing.", "No smoking."] })
-        risks.append({ "name": "Pneumonia", "desc": "Vulnerable to bacteria.", "prob": 50, "level": "High", "recs": ["Wash hands often.", "Avoid crowds.", "Consult doctor."] })
+        risks = [{"name": "Lung Infection", "desc": "High infection risk.", "prob": 80, "level": "Severe", "recs": ["Strictly avoid outdoors.", "Wear N99 mask.", "Steam inhalation."]},
+                 {"name": "Ischemic Risk", "desc": "Reduced heart oxygen.", "prob": 75, "level": "Severe", "recs": ["Elderly stay inside.", "No physical labor.", "Watch chest pain."]},
+                 {"name": "Hypoxia", "desc": "Headaches/Dizziness.", "prob": 60, "level": "High", "recs": ["Use oxygen.", "Calm breathing.", "No smoking."]},
+                 {"name": "Pneumonia", "desc": "Vulnerable to bacteria.", "prob": 50, "level": "High", "recs": ["Wash hands often.", "Avoid crowds.", "Consult doctor."]}]
     elif aqi <= 500:
-        risks.append({ "name": "Lung Impairment", "desc": "Breathing difficulty.", "prob": 90, "level": "Critical", "recs": ["Do not go out.", "Wet towels on windows.", "Max air purifier."] })
-        risks.append({ "name": "Stroke Risk", "desc": "Thickened blood.", "prob": 60, "level": "High", "recs": ["Hydrate heavily.", "Avoid stress.", "Emergency contacts ready."] })
-        risks.append({ "name": "Inflammation", "desc": "Systemic body inflammation.", "prob": 85, "level": "Critical", "recs": ["Anti-inflammatory food.", "Rest fully.", "No frying food."] })
-        risks.append({ "name": "Pulmonary Edema", "desc": "Fluid in lungs.", "prob": 40, "level": "Severe", "recs": ["Medical care if breathing hard.", "Sleep elevated.", "Don't lie flat."] })
+        risks = [{"name": "Lung Impairment", "desc": "Breathing difficulty.", "prob": 90, "level": "Critical", "recs": ["Do not go out.", "Wet towels on windows.", "Max air purifier."]},
+                 {"name": "Stroke Risk", "desc": "Thickened blood.", "prob": 60, "level": "High", "recs": ["Hydrate heavily.", "Avoid stress.", "Emergency contacts ready."]},
+                 {"name": "Inflammation", "desc": "Systemic body inflammation.", "prob": 85, "level": "Critical", "recs": ["Anti-inflammatory food.", "Rest fully.", "No frying food."]},
+                 {"name": "Pulmonary Edema", "desc": "Fluid in lungs.", "prob": 40, "level": "Severe", "recs": ["Medical care needed.", "Sleep elevated.", "Don't lie flat."]}]
     else:
-        risks.append({ "name": "ARDS", "desc": "Lung failure potential.", "prob": 95, "level": "Emergency", "recs": ["Evacuate area.", "Medical oxygen.", "N99 respirator."] })
-        risks.append({ "name": "Cardiac Arrest", "desc": "Extreme heart stress.", "prob": 70, "level": "Emergency", "recs": ["Bed rest.", "Defibrillator ready.", "No exertion."] })
-        risks.append({ "name": "Asphyxiation", "desc": "Toxic choking feeling.", "prob": 90, "level": "Emergency", "recs": ["Create clean room.", "Double filtration.", "Limit talking."] })
-        risks.append({ "name": "Lung Damage", "desc": "Permanent scarring risk.", "prob": 80, "level": "Critical", "recs": ["See pulmonologist.", "Lung detox.", "Relocate."] })
+        risks = [{"name": "ARDS", "desc": "Lung failure potential.", "prob": 95, "level": "Emergency", "recs": ["Evacuate area.", "Medical oxygen.", "N99 respirator."]},
+                 {"name": "Cardiac Arrest", "desc": "Extreme heart stress.", "prob": 70, "level": "Emergency", "recs": ["Bed rest.", "Defibrillator ready.", "No exertion."]},
+                 {"name": "Asphyxiation", "desc": "Toxic choking feeling.", "prob": 90, "level": "Emergency", "recs": ["Create clean room.", "Double filtration.", "Limit talking."]},
+                 {"name": "Lung Damage", "desc": "Permanent scarring risk.", "prob": 80, "level": "Critical", "recs": ["See pulmonologist.", "Lung detox.", "Relocate."]}]
     return risks
 
-# --- HTML PARTS ---
+# --- HTML TEMPLATES ---
 HTML_HEAD = """
 <!DOCTYPE html>
 <html lang="en">
@@ -164,84 +151,47 @@ HTML_HEAD = """
     <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.4.0/css/all.min.css">
     <script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
     <script src="https://cdn.jsdelivr.net/npm/chartjs-adapter-date-fns"></script>
-"""
-
-HTML_STYLE = """
     <style>
-        :root { --bg: #fdfbf7; --card-bg: #ffffff; --text-main: #1c1917; --text-muted: #78716c; --primary: #0f172a; --orange: #ea580c; --danger: #dc2626; --success: #16a34a; --border: #e7e5e4; }
-        * { box-sizing: border-box; margin: 0; padding: 0; }
-        body { font-family: 'Inter', sans-serif; background: var(--bg); color: var(--text-main); padding: 40px 20px; }
+        :root { --bg: #fdfbf7; --card-bg: #ffffff; --text-main: #1c1917; --text-muted: #78716c; --primary: #0f172a; }
+        body { font-family: 'Inter', sans-serif; background: var(--bg); color: var(--text-main); padding: 40px 20px; margin:0; }
         .container { max-width: 1200px; margin: 0 auto; }
         .header { display: flex; justify-content: space-between; align-items: center; margin-bottom: 30px; }
-        .logo { font-size: 1.8rem; font-weight: 800; color: var(--text-main); letter-spacing: -0.5px; display:flex; align-items:center; gap:10px; }
-        .refresh-btn { background: #e5e5e5; color: var(--text-main); border: none; padding: 10px 20px; border-radius: 30px; font-weight: 600; cursor: pointer; transition: 0.2s; }
-        .alert-banner { background: #fff7ed; border: 1px solid #ffedd5; color: #9a3412; padding: 20px; border-radius: 12px; margin-bottom: 30px; display:flex; align-items:center; gap:15px; }
-        .nav-tabs { display: flex; gap: 10px; background: white; padding: 8px; border-radius: 50px; margin-bottom: 30px; border: 1px solid var(--border); width: fit-content; box-shadow: 0 2px 5px rgba(0,0,0,0.05); }
-        .tab-btn { border: none; background: transparent; padding: 10px 24px; font-weight: 600; color: var(--text-muted); cursor: pointer; border-radius: 30px; transition: 0.2s; font-size: 0.9rem; }
+        .logo { font-size: 1.8rem; font-weight: 800; }
+        .alert-banner { background: #fff7ed; border: 1px solid #ffedd5; color: #9a3412; padding: 20px; border-radius: 12px; margin-bottom: 30px; display:flex; gap:15px; }
+        .nav-tabs { display: flex; gap: 10px; background: white; padding: 8px; border-radius: 50px; margin-bottom: 30px; border: 1px solid #e7e5e4; width: fit-content; }
+        .tab-btn { border: none; background: transparent; padding: 10px 24px; font-weight: 600; color: #78716c; cursor: pointer; border-radius: 30px; }
         .tab-btn.active { background: var(--primary); color: white; }
-        .section { display: none; animation: fadeIn 0.3s ease; }
-        .section.active { display: block; }
-        @keyframes fadeIn { from { opacity: 0; transform: translateY(5px); } to { opacity: 1; transform: translateY(0); } }
+        .section { display: none; } .section.active { display: block; animation: fadeIn 0.3s; }
         .dashboard-grid { display: grid; grid-template-columns: 1.2fr 1fr; gap: 25px; }
-        .card { background: var(--card-bg); border-radius: 20px; padding: 30px; box-shadow: 0 4px 6px -1px rgba(0,0,0,0.02); border: 1px solid var(--border); height: 100%; }
-        .card-header { display: flex; justify-content: space-between; align-items: center; margin-bottom: 25px; }
-        .card-title { font-size: 1.1rem; font-weight: 700; color: var(--text-main); }
-        .aqi-num { font-size: 5rem; font-weight: 800; color: var(--danger); line-height: 1; text-align: center; }
-        .aqi-sub { text-align: center; color: var(--text-muted); margin-top: 10px; font-weight: 500; }
+        .card { background: white; border-radius: 20px; padding: 30px; border: 1px solid #e7e5e4; }
         .stat-row { display: flex; gap: 15px; margin-top: 30px; }
-        .stat-box { flex: 1; background: #fafaf9; padding: 15px; border-radius: 12px; text-align: center; }
-        .stat-val { font-size: 1.5rem; font-weight: 800; color: var(--text-main); }
-        .health-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 20px; }
-        @media(max-width: 800px) { .health-grid { grid-template-columns: 1fr; } }
-        .risk-card { background: white; border: 1px solid var(--border); border-radius: 16px; padding: 25px; border-left: 5px solid var(--danger); }
-        .risk-header { display: flex; justify-content: space-between; align-items: center; margin-bottom: 10px; }
-        .risk-title { font-weight: 700; font-size: 1.05rem; }
-        .risk-badge { background: #fee2e2; color: #991b1b; padding: 4px 12px; border-radius: 20px; font-size: 0.75rem; font-weight: 700; }
-        .risk-desc { color: var(--text-muted); font-size: 0.9rem; margin-bottom: 15px; }
-        .progress-bg { height: 8px; background: #f5f5f4; border-radius: 4px; overflow: hidden; margin-bottom: 20px; }
-        .progress-fill { height: 100%; background: var(--danger); border-radius: 4px; width: 0%; transition: width 1s; }
-        .rec-box { background: #fdfbf7; padding: 15px; border-radius: 12px; }
-        .rec-title { font-size: 0.75rem; font-weight: 700; color: var(--text-muted); text-transform: uppercase; margin-bottom: 8px; }
-        .rec-list { list-style: none; font-size: 0.9rem; color: var(--text-main); padding-left: 0; }
-        .rec-list li { margin-bottom: 5px; position: relative; padding-left: 15px; }
-        .rec-list li::before { content: "•"; color: var(--primary); font-weight: bold; position: absolute; left: 0; }
-        .upload-card { display:block; text-align:center; padding: 40px; border: 2px dashed #d6d3d1; border-radius: 20px; background: #fafaf9; cursor: pointer; transition: 0.2s; }
-        .upload-card:hover { border-color: var(--primary); background: #f0fdf4; }
-        .upload-icon { font-size: 3rem; color: #d6d3d1; margin-bottom: 15px; transition:0.2s; }
-        .upload-card:hover .upload-icon { color: var(--primary); }
-        .date-picker { width:100%; padding:15px; border:1px solid #e7e5e4; border-radius:12px; font-size:1rem; margin-bottom:20px; font-family:'Inter',sans-serif; }
-        .btn-primary { display:inline-block; background:#0f172a; color:white; padding:12px 25px; border-radius:8px; text-decoration:none; margin-right:10px; border:none; cursor:pointer; font-weight:600; font-size:0.9rem; }
+        .stat-box { flex: 1; background: #fafaf9; padding: 15px; border-radius: 12px; text-align: center; font-weight:800; font-size:1.5rem; }
+        .risk-card { border: 1px solid #e7e5e4; border-radius: 16px; padding: 25px; border-left: 5px solid red; margin-bottom:20px; }
+        .filter-btn { padding: 8px 16px; border: 1px solid #e7e5e4; background: white; border-radius: 20px; cursor: pointer; margin-right: 5px; }
+        .filter-btn.active { background: var(--primary); color: white; }
+        .date-picker { padding:15px; border:1px solid #ddd; border-radius:12px; width:100%; margin-bottom:10px; }
+        .upload-card { display:block; text-align:center; padding: 40px; border: 2px dashed #ccc; border-radius: 20px; cursor: pointer; }
         .history-table { width: 100%; border-collapse: collapse; margin-top: 15px; }
-        .history-table th { text-align: left; padding: 12px; border-bottom: 2px solid #e7e5e4; color: var(--text-muted); font-size: 0.85rem; text-transform: uppercase; }
-        .history-table td { padding: 15px 12px; border-bottom: 1px solid #e7e5e4; color: var(--text-main); font-size: 0.95rem; }
-        .history-table tr:last-child td { border-bottom: none; }
-        .status-badge { padding: 4px 10px; border-radius: 20px; font-size: 0.75rem; font-weight: 700; background: #dcfce7; color: #166534; }
-        .filter-btn { padding: 8px 16px; border: 1px solid #e7e5e4; background: white; border-radius: 20px; cursor: pointer; margin-right: 5px; font-weight: 500; font-size: 0.85rem; }
-        .filter-btn.active { background: var(--primary); color: white; border-color: var(--primary); }
+        .history-table th { text-align: left; padding: 12px; border-bottom: 2px solid #eee; }
+        .history-table td { padding: 15px 12px; border-bottom: 1px solid #eee; }
+        @keyframes fadeIn { from { opacity: 0; transform: translateY(5px); } to { opacity: 1; transform: translateY(0); } }
     </style>
 </head>
-"""
-
-HTML_BODY = """
 <body>
 <div class="container">
     <div class="header">
-        <div class="logo"><i class="fa-solid fa-cloud"></i> SkySense</div>
-        <button class="refresh-btn" onclick="location.reload()">Refresh Data</button>
+        <div class="logo">SkySense</div>
+        <button onclick="location.reload()" style="padding:10px 20px; border-radius:30px; border:none; background:#e5e5e5; cursor:pointer; font-weight:600;">Refresh</button>
     </div>
-
     <div class="alert-banner">
-        <i class="fa-solid fa-triangle-exclamation"></i>
-        <div><strong>System Status:</strong> <span id="alert-msg">Waiting for data...</span></div>
+        <strong>Status:</strong> <span id="alert-msg">Waiting for data...</span>
     </div>
-
     <div class="nav-tabs">
         <button class="tab-btn active" onclick="sw('overview')">Overview</button>
         <button class="tab-btn" onclick="sw('gps')">GPS Charts</button>
         <button class="tab-btn" onclick="sw('analytics')">Analytics</button>
-        <button class="tab-btn" onclick="sw('disease')">Disease Reports</button>
+        <button class="tab-btn" onclick="sw('disease')">Health</button>
         <button class="tab-btn" onclick="sw('history')">History</button>
-        <button class="tab-btn" onclick="sw('esp32')">ESP32</button>
         <button class="tab-btn" onclick="sw('upload')">Upload</button>
         <button class="tab-btn" onclick="sw('export')">Export</button>
     </div>
@@ -249,80 +199,61 @@ HTML_BODY = """
     <div id="overview" class="section active">
         <div class="dashboard-grid">
             <div class="card">
-                <div class="card-header"><div class="card-title">Real-Time Air Quality</div></div>
-                <div class="aqi-num" id="aqi-val">--</div>
-                <div class="aqi-sub">AQI (US Standard)</div>
-                <div class="aqi-sub" style="margin-top:5px;"><i class="fa-solid fa-location-dot"></i> <span id="loc-name">Unknown</span></div>
+                <h3>Real-Time Air Quality</h3>
+                <div style="font-size:5rem; font-weight:800; color:#dc2626; text-align:center;" id="aqi-val">--</div>
+                <div style="text-align:center; color:#78716c;" id="loc-name">Unknown</div>
                 <div class="stat-row">
-                    <div class="stat-box"><div class="stat-val" id="val-pm1">--</div><div style="font-size:0.8rem">PM 1.0</div></div>
-                    <div class="stat-box"><div class="stat-val" id="val-pm25">--</div><div style="font-size:0.8rem">PM 2.5</div></div>
-                    <div class="stat-box"><div class="stat-val" id="val-pm10">--</div><div style="font-size:0.8rem">PM 10</div></div>
+                    <div class="stat-box"><div id="val-pm1">--</div><div style="font-size:0.8rem">PM 1.0</div></div>
+                    <div class="stat-box"><div id="val-pm25">--</div><div style="font-size:0.8rem">PM 2.5</div></div>
+                    <div class="stat-box"><div id="val-pm10">--</div><div style="font-size:0.8rem">PM 10</div></div>
                 </div>
             </div>
             <div class="card">
-                <div class="card-title" style="margin-bottom:20px;">Quick Health Summary</div>
-                <div id="mini-risk-list">Waiting for data...</div>
+                <h3>Quick Health Summary</h3>
+                <div id="mini-risk-list">Loading...</div>
             </div>
         </div>
     </div>
 
     <div id="gps" class="section">
         <div class="card">
-            <div class="card-title">AQI Level vs GPS Location</div>
-            <div style="height:500px; margin-top:20px;"><canvas id="mainChart"></canvas></div>
+            <h3>AQI Level vs Exact Location</h3>
+            <div style="height:500px;"><canvas id="mainChart"></canvas></div>
         </div>
     </div>
 
     <div id="analytics" class="section">
         <div class="card">
-            <div class="card-header">
-                <div class="card-title">Historical AQI Trends</div>
-                <div>
-                    <button class="filter-btn active" onclick="updateTrend(7)">7 Days</button>
-                    <button class="filter-btn" onclick="updateTrend(30)">30 Days</button>
-                    <button class="filter-btn" onclick="updateTrend(0)">All Time</button>
-                </div>
-            </div>
-            <div style="height:400px;"><canvas id="trendChart"></canvas></div>
-            <p style="text-align:center; color:#78716c; margin-top:10px; font-size:0.9rem;">Comparison of AQI levels based on uploaded flight data.</p>
+            <h3>Historical Trends</h3>
+            <button class="filter-btn active" onclick="updateTrend(7)">7 Days</button>
+            <button class="filter-btn" onclick="updateTrend(30)">30 Days</button>
+            <div style="height:400px; margin-top:20px;"><canvas id="trendChart"></canvas></div>
         </div>
     </div>
 
     <div id="disease" class="section">
-        <div class="card-title" style="margin-bottom:20px;">Detailed Health Risk Analysis</div>
-        <div class="health-grid" id="full-health-grid">
-            <p style="color:#78716c">Upload data to see health analysis.</p>
+        <div class="card">
+            <h3>Detailed Health Analysis</h3>
+            <div id="full-health-grid"></div>
         </div>
     </div>
 
     <div id="history" class="section">
         <div class="card">
-            <div class="card-title">Upload History</div>
+            <h3>Upload History</h3>
             <table class="history-table">
-                <thead><tr><th>Date</th><th>Filename</th><th>AQI</th></tr></thead>
-                <tbody id="history-body">
-                    <tr><td colspan="3" style="text-align:center; color:#78716c;">No files uploaded yet.</td></tr>
-                </tbody>
+                <thead><tr><th>Date</th><th>File (Download)</th><th>AQI</th></tr></thead>
+                <tbody id="history-body"></tbody>
             </table>
-        </div>
-    </div>
-
-    <div id="esp32" class="section">
-        <div class="card">
-            <div class="card-title">Live Telemetry</div>
-            <div id="esp-console" style="background:#0f172a; color:#22c55e; padding:20px; border-radius:12px; font-family:monospace; height:200px; overflow-y:auto; margin-top:20px;"></div>
         </div>
     </div>
 
     <div id="upload" class="section">
         <div class="card">
-            <div class="card-title" style="margin-bottom:20px;">Upload Flight Data</div>
-            <p style="color:#78716c; margin-bottom:10px;">Select the date of the flight:</p>
+            <h3>Upload Data</h3>
             <input type="date" id="upload-date" class="date-picker">
             <label class="upload-card">
-                <i class="fa-solid fa-cloud-arrow-up upload-icon"></i>
-                <div id="upload-text" style="font-weight:600; font-size:1.1rem; color:#1c1917;">Click to Upload File</div>
-                <div style="color:#78716c; font-size:0.9rem; margin-top:5px;">Supports CSV & Excel</div>
+                <div id="upload-text" style="font-weight:600; font-size:1.2rem;">Click to Upload CSV/Excel</div>
                 <input type="file" id="fileInput" style="display:none;">
             </label>
         </div>
@@ -330,13 +261,8 @@ HTML_BODY = """
 
     <div id="export" class="section">
         <div class="card">
-            <div class="card-title">Export Report</div>
-            <p style="color:#78716c; margin-top:10px; margin-bottom:25px;">
-                Download the complete dataset with calculated averages, health risks, and precautionary measures.
-            </p>
-            <div style="display:flex; gap:10px;">
-                <a href="/export/text" class="btn-primary"><i class="fa-solid fa-file-lines"></i> Export as Text File</a>
-            </div>
+            <h3>Export Report</h3>
+            <a href="/export/text" style="display:inline-block; background:#0f172a; color:white; padding:12px 25px; border-radius:8px; text-decoration:none;">Download Full Report</a>
         </div>
     </div>
 </div>
@@ -344,180 +270,171 @@ HTML_BODY = """
 
 HTML_SCRIPT = """
 <script>
-    let mainChart = null;
-    let trendChart = null;
-    let rawHistory = [];
+    let mainChart = null, trendChart = null, rawHistory = [];
 
     function sw(id) {
         document.querySelectorAll('.section').forEach(e => e.classList.remove('active'));
         document.getElementById(id).classList.add('active');
         document.querySelectorAll('.tab-btn').forEach(e => e.classList.remove('active'));
         document.querySelector(`button[onclick="sw('${id}')"]`).classList.add('active');
-        if(id === 'analytics') updateTrend(7); 
+        if(id === 'analytics') updateTrend(7);
     }
 
     document.getElementById('upload-date').valueAsDate = new Date();
-
-    setInterval(() => { fetch('/api/data').then(r => r.json()).then(d => {
-        rawHistory = d.historical_stats || [];
-        updateUI(d);
-    }); }, 3000);
+    setInterval(() => { fetch('/api/data').then(r => r.json()).then(d => { rawHistory = d.historical_stats || []; updateUI(d); }); }, 3000);
 
     document.getElementById('fileInput').addEventListener('change', async (e) => {
         const file = e.target.files[0];
-        const dateInput = document.getElementById('upload-date');
         if(!file) return;
         const txt = document.getElementById('upload-text'); txt.innerText = "Uploading...";
-        const fd = new FormData(); fd.append('file', file); fd.append('date', dateInput.value);
+        const fd = new FormData(); fd.append('file', file); fd.append('date', document.getElementById('upload-date').value);
         try {
             const res = await fetch('/upload', { method: 'POST', body: fd });
             const d = await res.json();
-            if(d.error) { 
-                alert("Server Error: " + d.error); 
-                txt.innerText = "Upload Failed"; 
-            } else { 
-                txt.innerText = "Success!"; 
-                rawHistory = d.data.historical_stats || [];
-                updateUI(d.data); 
-                setTimeout(()=>sw('overview'), 500); 
-            }
-        } catch(e) { 
-            alert("Upload Failed. Ensure the file is a valid CSV or Excel."); 
-            txt.innerText = "Retry"; 
-        }
+            txt.innerText = d.error ? "Failed" : "Success!";
+            if(!d.error) { updateUI(d.data); setTimeout(()=>sw('overview'), 500); }
+        } catch(e) { txt.innerText = "Error"; }
     });
 
-    // --- TREND CHART LOGIC ---
     function updateTrend(days) {
-        document.querySelectorAll('.filter-btn').forEach(b => b.classList.remove('active'));
-        event.target.classList.add('active');
-
-        if(!rawHistory || rawHistory.length === 0) return;
-
-        const now = new Date();
-        const cutoff = new Date();
-        cutoff.setDate(now.getDate() - days);
-
-        let filtered = rawHistory.filter(d => {
-            if(days === 0) return true;
-            return new Date(d.date) >= cutoff;
-        }).sort((a,b) => new Date(a.date) - new Date(b.date));
-
-        const labels = filtered.map(d => d.date);
-        const data = filtered.map(d => d.aqi);
-
         const ctx = document.getElementById('trendChart').getContext('2d');
         if(trendChart) trendChart.destroy();
-
+        const cutoff = new Date(); cutoff.setDate(cutoff.getDate() - days);
+        const filtered = rawHistory.filter(d => days===0 || new Date(d.date) >= cutoff).sort((a,b) => new Date(a.date)-new Date(b.date));
         trendChart = new Chart(ctx, {
             type: 'line',
-            data: {
-                labels: labels,
-                datasets: [{
-                    label: 'Average AQI',
-                    data: data,
-                    borderColor: '#0f172a',
-                    backgroundColor: 'rgba(15, 23, 42, 0.1)',
-                    borderWidth: 2,
-                    fill: true,
-                    tension: 0.3,
-                    pointRadius: 4
-                }]
-            },
-            options: {
-                responsive: true,
-                maintainAspectRatio: false,
-                scales: { y: { beginAtZero: true } }
-            }
+            data: { labels: filtered.map(d=>d.date), datasets: [{ label: 'Avg AQI', data: filtered.map(d=>d.aqi), borderColor: '#0f172a', tension: 0.3 }] },
+            options: { responsive: true, maintainAspectRatio: false }
         });
     }
 
     function updateUI(data) {
         document.getElementById('aqi-val').innerText = data.aqi;
-        document.getElementById('val-pm1').innerText = data.pm1 || '--';
-        document.getElementById('val-pm25').innerText = data.pm25 || '--';
-        document.getElementById('val-pm10').innerText = data.pm10 || '--';
+        document.getElementById('val-pm1').innerText = data.pm1;
+        document.getElementById('val-pm25').innerText = data.pm25;
+        document.getElementById('val-pm10').innerText = data.pm10;
         document.getElementById('loc-name').innerText = data.location_name;
-        
-        let aqiStatus = "Good";
-        if(data.aqi > 100) aqiStatus = "Moderate";
-        if(data.aqi > 200) aqiStatus = "Poor";
-        if(data.aqi > 300) aqiStatus = "Severe";
-        if(data.aqi > 400) aqiStatus = "Hazardous";
-        if(data.aqi > 500) aqiStatus = "Emergency";
-        
-        document.getElementById('alert-msg').innerText = `${aqiStatus} (AQI: ${data.aqi})`;
+        document.getElementById('alert-msg').innerText = `AQI ${data.aqi}`;
 
-        // HEALTH REPORTS
+        // HEALTH
         const grid = document.getElementById('full-health-grid');
-        const miniList = document.getElementById('mini-risk-list');
-        if(data.health_risks.length > 0) {
-            grid.innerHTML = ''; miniList.innerHTML = '';
+        const mini = document.getElementById('mini-risk-list');
+        if(data.health_risks.length) {
+            grid.innerHTML = ''; mini.innerHTML = '';
             data.health_risks.forEach(r => {
-                let color, badgeColor, badgeText;
-                if(r.level === 'Good' || r.level === 'Low') { color='#16a34a'; badgeColor='#dcfce7'; badgeText='#166534'; }
-                else if(r.level === 'Moderate') { color='#ea580c'; badgeColor='#ffedd5'; badgeText='#9a3412'; }
-                else { color='#dc2626'; badgeColor='#fee2e2'; badgeText='#991b1b'; }
-                
-                grid.innerHTML += `<div class="risk-card" style="border-left-color:${color}">
-                    <div class="risk-header"><div class="risk-title">${r.name}</div><div class="risk-badge" style="background:${badgeColor}; color:${badgeText}">${r.level}</div></div>
-                    <div class="risk-desc">${r.desc}</div>
-                    <div class="progress-bg"><div class="progress-fill" style="width:${r.prob}%; background:${color}"></div></div>
-                    <div class="rec-box"><div class="rec-title">RECOMMENDATIONS</div><ul class="rec-list">${r.recs.map(x => `<li>${x}</li>`).join('')}</ul></div></div>`;
-                
-                miniList.innerHTML += `<div style="display:flex; justify-content:space-between; padding:10px 0; border-bottom:1px solid #f5f5f4;"><span style="font-weight:600;">${r.name}</span><span style="font-weight:700; color:${color}">${r.level}</span></div>`;
+                let color = r.level === 'Good' ? '#16a34a' : (r.level === 'Moderate' ? '#ea580c' : '#dc2626');
+                grid.innerHTML += `<div class="risk-card" style="border-left-color:${color}"><h3>${r.name} (${r.level})</h3><p>${r.desc}</p><ul>${r.recs.map(x=>`<li>${x}</li>`).join('')}</ul></div>`;
+                mini.innerHTML += `<div style="display:flex; justify-content:space-between; padding:10px 0; border-bottom:1px solid #eee;"><span>${r.name}</span><span style="color:${color}; font-weight:bold;">${r.level}</span></div>`;
             });
         }
 
-        // HISTORY UPDATE
-        const histBody = document.getElementById('history-body');
-        if(data.history && data.history.length > 0) {
-            histBody.innerHTML = '';
-            data.history.forEach(h => {
-                histBody.innerHTML += `<tr><td>${h.date}</td><td><a href="/uploads/${h.filename}" target="_blank" style="color:#3b82f6; text-decoration:none; font-weight:600;">${h.filename}</a></td><td><strong>${h.aqi || '--'}</strong></td></tr>`;
-            });
+        // HISTORY
+        const hb = document.getElementById('history-body');
+        if(data.history.length) {
+            hb.innerHTML = data.history.map(h => `<tr><td>${h.date}</td><td><a href="/uploads/${h.filename}" target="_blank" style="color:#2563eb; text-decoration:none;">${h.filename}</a></td><td><b>${h.aqi}</b></td></tr>`).join('');
         }
 
-        // --- UPDATED CHART LABELS (CLEAN LOCATION) ---
-        if(data.chart_data.aqi.length > 0) {
+        // CHART
+        if(data.chart_data.aqi.length) {
             const ctx = document.getElementById('mainChart').getContext('2d');
+            // CLEAN LOCATION STRING: Remove coordinates if they are duplicated
+            const cleanLoc = data.location_name.split('(')[0].trim();
+            const labels = data.chart_data.gps.map(g => `${cleanLoc} (${Number(g.lat).toFixed(3)}, ${Number(g.lon).toFixed(3)})`);
             
-            // Clean the name to remove any duplicate coordinates
-            let cleanLocName = data.location_name.split('(')[0].trim();
-            
-            const labels = data.chart_data.gps.map((g, i) => {
-               // FORCE label format: "City Name (Lat, Lon)"
-               return `${cleanLocName} (${Number(g.lat).toFixed(3)}, ${Number(g.lon).toFixed(3)})`;
-            });
-
             if(mainChart) mainChart.destroy();
-            mainChart = new Chart(ctx, { 
-                type: 'bar', 
-                data: { 
-                    labels: labels, 
-                    datasets: [{ 
-                        label: 'AQI Level', 
-                        data: data.chart_data.aqi, 
-                        backgroundColor: '#3b82f6', 
-                        borderRadius: 5,
-                        barPercentage: 0.6
-                    }] 
-                }, 
-                options: { 
-                    indexAxis: 'y', 
-                    responsive: true, 
-                    maintainAspectRatio: false,
-                    scales: {
-                        x: { beginAtZero: true, grid: { display: true } },
-                        y: { grid: { display: false }, ticks: { autoSkip: true, maxTicksLimit: 15 } }
-                    },
-                    plugins: { legend: { display: false } }
-                } 
+            mainChart = new Chart(ctx, {
+                type: 'bar',
+                data: { labels: labels, datasets: [{ label: 'AQI', data: data.chart_data.aqi, backgroundColor: '#3b82f6', borderRadius: 5 }] },
+                options: { indexAxis: 'y', responsive: true, maintainAspectRatio: false, scales: { x: { beginAtZero: true } } }
             });
         }
-
-        document.getElementById('esp-console').innerHTML = data.esp32_log.join('<br>');
     }
 </script>
 </body>
 </html>
+"""
+
+# --- ROUTES ---
+@app.route('/')
+def home(): return render_template_string(HTML_HEAD + HTML_STYLE + HTML_BODY + HTML_SCRIPT)
+
+@app.route('/api/data')
+def get_data(): 
+    current_data['history'] = history_log
+    current_data['historical_stats'] = historical_stats
+    return jsonify(current_data)
+
+@app.route('/uploads/<filename>')
+def dl(filename): return send_from_directory(app.config['UPLOAD_FOLDER'], filename)
+
+@app.route('/upload', methods=['POST'])
+def upload():
+    global current_data
+    if 'file' not in request.files: return jsonify({"error": "No file"}), 400
+    f, dt = request.files['file'], request.form.get('date', str(datetime.date.today()))
+    try:
+        f.save(os.path.join(app.config['UPLOAD_FOLDER'], f.filename))
+        f.seek(0)
+        df = normalize_columns(read_file_safely(f))
+        
+        valid = [r for i, r in df.head(100).iterrows() if r.get('lat',0) != 0 and r.get('lon',0) != 0]
+        if not valid: raise ValueError("No valid GPS")
+        
+        # Filter duplicates & calculate
+        filtered = [valid[0]]
+        for r in valid[1:]:
+            if has_moved(r['lat'], r['lon']): filtered.append(r)
+            
+        avgs = {k: round(pd.DataFrame(filtered)[k].mean(), 1) for k in ['pm1','pm25','pm10','temp','hum']}
+        aqi = int(avgs['pm25']*2 + avgs['pm10']*0.5)
+        
+        # USE CACHED OR RETRIED LOCATION
+        loc = get_city_name(filtered[0]['lat'], filtered[0]['lon'])
+        
+        # Update Global
+        history_log.insert(0, {"date":dt, "filename":f.filename, "status":"Success", "aqi": aqi})
+        existing = next((x for x in historical_stats if x['date'] == dt), None)
+        if existing: existing['aqi'] = aqi
+        else: historical_stats.append({"date": dt, "aqi": aqi})
+        historical_stats.sort(key=lambda x: x['date'])
+        
+        current_data.update({"aqi": aqi, "location_name": loc, **avgs, 
+                             "health_risks": calc_health(avgs), 
+                             "chart_data": {"aqi": [int(r['pm25']*2 + r['pm10']*0.5) for r in filtered], 
+                                            "gps": [{"lat":r['lat'], "lon":r['lon']} for r in filtered]}})
+        
+        return jsonify({"message": "OK", "data": current_data})
+    except Exception as e: return jsonify({"error": str(e)}), 500
+
+@app.route('/api/upload_sensor', methods=['POST'])
+def sensor():
+    try:
+        d = request.json
+        aqi = int(d.get('pm25',0)*2 + d.get('pm10',0)*0.5)
+        
+        # Smart Location Update (only occasionally to save API calls)
+        if current_data['location_name'] == "Waiting for GPS..." or random.random() < 0.1:
+            current_data['location_name'] = get_city_name(d.get('lat',0), d.get('lon',0))
+            
+        current_data.update(d)
+        current_data['aqi'] = aqi
+        current_data['health_risks'] = calc_health(current_data)
+        
+        if has_moved(d.get('lat',0), d.get('lon',0)) and d.get('lat',0) != 0:
+            current_data['chart_data']['aqi'].append(aqi)
+            current_data['chart_data']['gps'].append({"lat":d.get('lat',0),"lon":d.get('lon',0)})
+            if len(current_data['chart_data']['aqi']) > 50: 
+                current_data['chart_data']['aqi'].pop(0); current_data['chart_data']['gps'].pop(0)
+                
+        return jsonify({"status":"ok"})
+    except Exception as e: return jsonify({"error":str(e)}), 400
+
+@app.route('/export/text')
+def export():
+    d = current_data
+    report = f"SKYSENSE REPORT\nDate: {datetime.datetime.now()}\nLoc: {d['location_name']}\nAQI: {d['aqi']}\n"
+    report += "\n".join([f"- {r['name']}: {r['desc']}" for r in d['health_risks']])
+    return send_file(io.BytesIO(report.encode()), mimetype='text/plain', as_attachment=True, download_name="report.txt")
+
+if __name__ == '__main__':
+    app.run(debug=True)
