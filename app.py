@@ -9,8 +9,8 @@ import time
 # --- SETUP ---
 try:
     from geopy.geocoders import Nominatim
-    # Fixed User Agent to build reputation with the API
-    geolocator = Nominatim(user_agent="skysense_drone_dashboard_pro_v1")
+    # Random User Agent to avoid blocking
+    geolocator = Nominatim(user_agent=f"skysense_final_v300_{random.randint(10000,99999)}")
 except ImportError:
     geolocator = None
 
@@ -28,6 +28,7 @@ current_data = {
     "aqi": 0, "pm1": 0, "pm25": 0, "pm10": 0, "temp": 0, "hum": 0,
     "avg_aqi": 0, "avg_pm1": 0, "avg_pm25": 0, "avg_pm10": 0, "avg_temp": 0, "avg_hum": 0,
     "status": "Waiting...", "location_name": "Waiting for GPS...",
+    "lat": 0, "lon": 0,
     "health_risks": [], "chart_data": {"aqi":[], "gps":[]},
     "esp32_log": ["> System Initialized..."], "last_updated": "Never"
 }
@@ -61,48 +62,27 @@ def normalize_columns(df):
         elif 'lon' in cl: col_map[c] = 'lon'
     return df.rename(columns=col_map)
 
-# --- STRICT LOCATION FINDER ---
+# --- BACKEND LOCATION FINDER ---
 def get_city_name(lat, lon):
-    if lat == 0 or lon == 0: return None # Return None if invalid
-    
-    # 1. Check Cache
+    if lat == 0 or lon == 0: return "No GPS Signal"
     key = (round(lat, 3), round(lon, 3))
     if key in location_cache: return location_cache[key]
     
-    if not geolocator: return None
+    coord_str = f"{round(lat, 4)}, {round(lon, 4)}"
+    if not geolocator: return coord_str
     
-    # 2. Try Geocoding (3 Retries)
-    for _ in range(3): 
+    for _ in range(2): 
         try:
-            # 10s timeout
-            loc = geolocator.reverse(f"{lat}, {lon}", exactly_one=True, language='en', timeout=10)
+            loc = geolocator.reverse(f"{lat}, {lon}", exactly_one=True, language='en', timeout=5)
             if loc:
                 add = loc.raw.get('address', {})
-                # Get specific area
-                name = (add.get('neighbourhood') or 
-                        add.get('suburb') or 
-                        add.get('village') or 
-                        add.get('road') or 
-                        add.get('residential'))
-                
-                city = (add.get('city') or 
-                        add.get('town') or 
-                        add.get('county') or 
-                        add.get('state'))
-                
-                if name and city: final_name = f"{name}, {city}"
-                elif name: final_name = name
-                elif city: final_name = city
-                else: final_name = None
-                
-                if final_name:
-                    location_cache[key] = final_name
-                    return final_name
-        except: 
-            time.sleep(1)
-            continue
-            
-    return None # Return None if failed, so we keep the old name
+                name = (add.get('neighbourhood') or add.get('suburb') or add.get('village') or add.get('road') or add.get('residential'))
+                city = (add.get('city') or add.get('town') or add.get('county') or add.get('state'))
+                res = f"{name}, {city}" if name and city else (name or city or coord_str)
+                location_cache[key] = res
+                return res
+        except: time.sleep(1)
+    return coord_str
 
 def calc_health(val):
     aqi = int((val.get('pm25', 0) * 2) + (val.get('pm10', 0) * 0.5))
@@ -176,10 +156,10 @@ body{font-family:'Inter',sans-serif;background:var(--bg);color:var(--text);paddi
 .stat-row{display:flex;gap:15px;margin-top:25px;} .stat{flex:1;background:#fafaf9;padding:15px;text-align:center;border-radius:10px;font-weight:700;}
 .risk-card{border:1px solid #e5e7eb;border-radius:12px;padding:20px;border-left:5px solid var(--dang);margin-bottom:15px;background:#fff;}
 .hist-table{width:100%;border-collapse:collapse;} .hist-table th{text-align:left;padding:10px;border-bottom:2px solid #eee;} .hist-table td{padding:10px;border-bottom:1px solid #eee;}
-.upload-card{border:2px dashed #cbd5e1;padding:40px;text-align:center;border-radius:15px;cursor:pointer;transition:0.2s;background:#fff;display:flex;flex-direction:column;align-items:center;gap:15px;} 
+.upload-card{border:2px dashed #cbd5e1;padding:30px;text-align:center;border-radius:15px;cursor:pointer;transition:0.2s;background:#fafaf9;display:flex;flex-direction:column;align-items:center;gap:10px;} 
 .upload-card:hover{border-color:var(--prim);background:#f8fafc;}
-.upload-icon{font-size:2.5rem;color:#94a3b8;}
-.anl-header{display:flex;justify-content:space-between;align-items:center;margin-bottom:15px;}
+.upload-icon{font-size:2rem;color:#94a3b8;}
+.anl-header{display:flex;align-items:center;margin-bottom:20px;gap:15px;}
 .sel-box{padding:8px;border-radius:8px;border:1px solid #ccc;font-family:inherit;}
 .upload-container{max-width:600px;margin:0 auto;}
 @keyframes fadeIn{from{opacity:0;transform:translateY(5px);}to{opacity:1;transform:translateY(0);}}
@@ -228,16 +208,13 @@ body{font-family:'Inter',sans-serif;background:var(--bg);color:var(--text);paddi
  <div id="anl" class="section">
   <div class="card">
    <div class="anl-header">
-    <h3>Historical Trends</h3>
-    <div>
-     <label style="font-size:0.9rem;margin-right:10px;">Select Period:</label>
-     <select id="trendFilter" onchange="upTr()" class="sel-box">
-      <option value="7">Last 7 Days</option>
-      <option value="30">Last 30 Days</option>
-      <option value="120">Last 120 Days</option>
-      <option value="365">Last 1 Year</option>
-     </select>
-    </div>
+    <h3 style="margin:0;">Historical Trends</h3>
+    <select id="trendFilter" onchange="upTr()" class="sel-box">
+     <option value="7">Last 7 Days</option>
+     <option value="30">Last 30 Days</option>
+     <option value="120">Last 120 Days</option>
+     <option value="365">Last 1 Year</option>
+    </select>
    </div>
    <div style="height:500px;"><canvas id="chartTr"></canvas></div>
   </div>
@@ -273,7 +250,7 @@ body{font-family:'Inter',sans-serif;background:var(--bg);color:var(--text);paddi
 
 </div>
 <script>
- let cGps=null, cTr=null, hist=[];
+ let cGps=null, cTr=null, hist=[], locCache={};
  function sw(id){ document.querySelectorAll('.section').forEach(x=>x.classList.remove('active')); document.getElementById(id).classList.add('active'); document.querySelectorAll('.tab-btn').forEach(x=>x.classList.remove('active')); event.target.classList.add('active'); if(id==='anl') upTr(); }
  document.getElementById('dt').valueAsDate=new Date();
  setInterval(()=>{ fetch('/api/data').then(r=>r.json()).then(d=>{ hist=d.historical_stats||[]; upUI(d); }); },3000);
@@ -293,9 +270,28 @@ body{font-family:'Inter',sans-serif;background:var(--bg);color:var(--text);paddi
   let f=hist.filter(x=>new Date(x.date)>=cut).sort((a,b)=>new Date(a.date)-new Date(b.date));
   cTr=new Chart(ctx,{type:'line',data:{labels:f.map(x=>x.date),datasets:[{label:'Average AQI',data:f.map(x=>x.aqi),borderColor:'#0f172a',backgroundColor:'rgba(15,23,42,0.1)',fill:true,tension:0.3}]},options:{responsive:true,maintainAspectRatio:false}});
  }
- function upUI(d){
+ async function resolveLoc(lat, lon) {
+    if(lat===0) return "Waiting...";
+    let key = `${lat.toFixed(3)},${lon.toFixed(3)}`;
+    if(locCache[key]) return locCache[key];
+    try {
+        let res = await fetch(`https://nominatim.openstreetmap.org/reverse?format=json&lat=${lat}&lon=${lon}`);
+        let data = await res.json();
+        let add = data.address;
+        let name = add.neighbourhood || add.suburb || add.road || add.city || add.town;
+        let city = add.city || add.town || add.county || add.state;
+        let loc = name && city ? `${name}, ${city}` : (name || city || `${lat.toFixed(3)}, ${lon.toFixed(3)}`);
+        locCache[key] = loc;
+        return loc;
+    } catch(e) { return `${lat.toFixed(3)}, ${lon.toFixed(3)}`; }
+ }
+ async function upUI(d){
   document.getElementById('aqi').innerText=d.aqi; 
-  document.getElementById('loc').innerText=d.location_name; // THIS WILL NOW SHOW CITY NAME
+  
+  // FRONTEND GEOCODING FIX
+  let locTxt = await resolveLoc(d.lat, d.lon);
+  document.getElementById('loc').innerText = locTxt;
+  
   document.getElementById('p1').innerText=d.pm1; document.getElementById('p2').innerText=d.pm25; document.getElementById('p10').innerText=d.pm10;
   
   let hDiv=document.getElementById('full-health'), mDiv=document.getElementById('mini-health');
@@ -312,7 +308,7 @@ body{font-family:'Inter',sans-serif;background:var(--bg);color:var(--text);paddi
   
   if(d.chart_data.aqi.length){
    let ctx=document.getElementById('chartGps').getContext('2d');
-   let cleanLoc=d.location_name.split('(')[0].trim();
+   let cleanLoc = locTxt.split(',')[0]; 
    let labs=d.chart_data.gps.map(g=>`${cleanLoc} (${Number(g.lat).toFixed(3)}, ${Number(g.lon).toFixed(3)})`);
    if(cGps)cGps.destroy();
    cGps=new Chart(ctx,{type:'bar',data:{labels:labs,datasets:[{label:'AQI Level',data:d.chart_data.aqi,backgroundColor:'#3b82f6',borderRadius:4}]},options:{indexAxis:'y',responsive:true,maintainAspectRatio:false,scales:{x:{beginAtZero:true}}}});
@@ -355,8 +351,8 @@ def upload():
         avgs = {k: round(pd.DataFrame(filtered)[k].mean(), 1) for k in ['pm1','pm25','pm10','temp','hum']}
         aqi = int(avgs['pm25']*2 + avgs['pm10']*0.5)
         
-        # Geocode Location
-        new_loc = get_city_name(filtered[0]['lat'], filtered[0]['lon'])
+        # NOTE: Backend location disabled to rely on frontend (prevents blocks)
+        loc = "Updating..." 
         
         history_log.insert(0, {"date":dt, "filename":f.filename, "status":"Success", "aqi": aqi})
         existing = next((x for x in historical_stats if x['date'] == dt), None)
@@ -364,13 +360,17 @@ def upload():
         else: historical_stats.append({"date": dt, "aqi": aqi})
         historical_stats.sort(key=lambda x: x['date'])
         
-        # Only update location if we found a valid name
-        final_loc = new_loc if new_loc else current_data['location_name']
-        
-        current_data.update({"aqi": aqi, "location_name": final_loc, **avgs, 
-                             "health_risks": calc_health(avgs), 
-                             "chart_data": {"aqi": [int(r['pm25']*2 + r['pm10']*0.5) for r in filtered], 
-                                            "gps": [{"lat":r['lat'], "lon":r['lon']} for r in filtered]}})
+        # Save last lat/lon for frontend lookup
+        current_data.update({
+            "aqi": aqi, 
+            "location_name": loc, 
+            "lat": filtered[0]['lat'], 
+            "lon": filtered[0]['lon'],
+            **avgs, 
+            "health_risks": calc_health(avgs), 
+            "chart_data": {"aqi": [int(r['pm25']*2 + r['pm10']*0.5) for r in filtered], 
+                           "gps": [{"lat":r['lat'], "lon":r['lon']} for r in filtered]}
+        })
         return jsonify({"message": "OK", "data": current_data})
     except Exception as e: return jsonify({"error": str(e)}), 500
 
@@ -379,11 +379,7 @@ def sensor():
     try:
         d = request.json
         aqi = int(d.get('pm25',0)*2 + d.get('pm10',0)*0.5)
-        
-        # Location update attempt
-        new_loc = get_city_name(d.get('lat',0), d.get('lon',0))
-        if new_loc: current_data['location_name'] = new_loc
-            
+        # Store lat/lon for frontend to resolve
         current_data.update(d)
         current_data['aqi'] = aqi
         current_data['health_risks'] = calc_health(current_data)
@@ -403,7 +399,7 @@ def export():
 SKYSENSE DETAILED AIR QUALITY REPORT
 ==================================================
 Date: {datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S")}
-Location: {d['location_name']}
+Location: {d['location_name']} (Coords: {d.get('lat')}, {d.get('lon')})
 
 1. ENVIRONMENTAL AVERAGES
 -------------------------
