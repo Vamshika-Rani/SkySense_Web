@@ -9,8 +9,9 @@ import time
 # --- SETUP ---
 try:
     from geopy.geocoders import Nominatim
-    # Random User Agent to prevent blocking
-    geolocator = Nominatim(user_agent=f"skysense_final_v100_{random.randint(10000,99999)}")
+    from geopy.exc import GeocoderTimedOut, GeocoderServiceError
+    # Random User Agent reduces blocking risk
+    geolocator = Nominatim(user_agent=f"skysense_v_final_{random.randint(10000,99999)}")
 except ImportError:
     geolocator = None
 
@@ -61,6 +62,7 @@ def normalize_columns(df):
         elif 'lon' in cl: col_map[c] = 'lon'
     return df.rename(columns=col_map)
 
+# --- LOCATION LOGIC (Cities/Areas) ---
 def get_city_name(lat, lon):
     if lat == 0 or lon == 0: return "No GPS Signal"
     
@@ -71,41 +73,44 @@ def get_city_name(lat, lon):
     coord_str = f"{round(lat, 4)}, {round(lon, 4)}"
     if not geolocator: return coord_str
     
-    # 2. Try Geocoding (Aggressive Fallback)
-    try:
-        for _ in range(2): 
-            try:
-                loc = geolocator.reverse(f"{lat}, {lon}", exactly_one=True, language='en', timeout=8)
-                if loc:
-                    add = loc.raw.get('address', {})
-                    # Try getting ANY name, starting from most specific
-                    name = (add.get('neighbourhood') or 
-                            add.get('suburb') or 
-                            add.get('village') or 
-                            add.get('road') or 
-                            add.get('residential') or
-                            add.get('city') or 
-                            add.get('town') or 
-                            add.get('county') or 
-                            add.get('state'))
-                    
-                    if name:
-                        # Append City if we found a small area
-                        if name != add.get('city') and add.get('city'):
-                            name = f"{name}, {add.get('city')}"
-                        
-                        location_cache[key] = name
-                        return name
-            except: time.sleep(1)
-    except: pass
+    # 2. Try Geocoding (Aggressive Retry)
+    for _ in range(3): 
+        try:
+            loc = geolocator.reverse(f"{lat}, {lon}", exactly_one=True, language='en', timeout=10)
+            if loc:
+                add = loc.raw.get('address', {})
+                # Priority: Neighborhood -> Suburb -> Road -> City
+                name = (add.get('neighbourhood') or 
+                        add.get('suburb') or 
+                        add.get('village') or 
+                        add.get('road') or 
+                        add.get('residential') or
+                        add.get('city_district'))
+                
+                city = (add.get('city') or 
+                        add.get('town') or 
+                        add.get('county') or 
+                        add.get('state'))
+                
+                final_name = coord_str
+                if name and city: final_name = f"{name}, {city}"
+                elif name: final_name = name
+                elif city: final_name = city
+                
+                location_cache[key] = final_name
+                return final_name
+        except: 
+            time.sleep(1)
+            continue
+            
     return coord_str
 
 def calc_health(val):
     aqi = int((val.get('pm25', 0) * 2) + (val.get('pm10', 0) * 0.5))
     if aqi <= 100:
         return [
-            {"name": "General Well-being", "desc": "Air quality is satisfactory. Great day for outdoor activity.", "prob": 5, "level": "Good", "recs": ["Ventilate your home freely.", "Enjoy outdoor activities.", "No special filtration needed."]},
-            {"name": "Respiratory Health", "desc": "No irritation or respiratory distress expected.", "prob": 5, "level": "Good", "recs": ["Continue normal exercise.", "Deep breathing is safe.", "Enjoy the fresh air."]},
+            {"name": "General Well-being", "desc": "Air quality is satisfactory.", "prob": 5, "level": "Good", "recs": ["Ventilate your home freely.", "Enjoy outdoor activities.", "No special filtration needed."]},
+            {"name": "Respiratory Health", "desc": "No irritation expected.", "prob": 5, "level": "Good", "recs": ["Continue normal exercise.", "Deep breathing is safe.", "Enjoy the fresh air."]},
             {"name": "Sensitive Groups", "desc": "People with allergies can enjoy outdoors.", "prob": 10, "level": "Low", "recs": ["Keep usual inhalers just in case.", "Monitor pollen levels.", "No masks required."]},
             {"name": "Skin & Eye", "desc": "Clear visibility, no irritation.", "prob": 0, "level": "Low", "recs": ["No protective eyewear needed.", "Standard skincare.", "Use sunscreen."]}
         ]
@@ -175,7 +180,6 @@ body{font-family:'Inter',sans-serif;background:var(--bg);color:var(--text);paddi
 .upload-card{border:2px dashed #cbd5e1;padding:30px;text-align:center;border-radius:15px;cursor:pointer;transition:0.2s;background:#fafaf9;display:flex;flex-direction:column;align-items:center;gap:10px;} 
 .upload-card:hover{border-color:var(--prim);background:#f1f5f9;}
 .upload-icon{font-size:2rem;color:#94a3b8;}
-/* FIXED ANALYTICS & UPLOAD LAYOUTS */
 .anl-header{display:flex;justify-content:space-between;align-items:center;margin-bottom:15px;}
 .sel-box{padding:8px;border-radius:8px;border:1px solid #ccc;font-family:inherit;}
 .upload-container{max-width:600px;margin:0 auto;}
@@ -350,6 +354,8 @@ def upload():
             
         avgs = {k: round(pd.DataFrame(filtered)[k].mean(), 1) for k in ['pm1','pm25','pm10','temp','hum']}
         aqi = int(avgs['pm25']*2 + avgs['pm10']*0.5)
+        
+        # Get City Name
         loc = get_city_name(filtered[0]['lat'], filtered[0]['lon'])
         
         history_log.insert(0, {"date":dt, "filename":f.filename, "status":"Success", "aqi": aqi})
