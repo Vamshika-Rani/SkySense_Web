@@ -9,9 +9,8 @@ import time
 # --- SETUP ---
 try:
     from geopy.geocoders import Nominatim
-    from geopy.exc import GeocoderTimedOut, GeocoderServiceError
-    # Random User Agent reduces blocking risk
-    geolocator = Nominatim(user_agent=f"skysense_v_final_{random.randint(10000,99999)}")
+    # Fixed User Agent to build reputation with the API
+    geolocator = Nominatim(user_agent="skysense_drone_dashboard_pro_v1")
 except ImportError:
     geolocator = None
 
@@ -62,92 +61,92 @@ def normalize_columns(df):
         elif 'lon' in cl: col_map[c] = 'lon'
     return df.rename(columns=col_map)
 
-# --- LOCATION LOGIC (Cities/Areas) ---
+# --- STRICT LOCATION FINDER ---
 def get_city_name(lat, lon):
-    if lat == 0 or lon == 0: return "No GPS Signal"
+    if lat == 0 or lon == 0: return None # Return None if invalid
     
     # 1. Check Cache
     key = (round(lat, 3), round(lon, 3))
     if key in location_cache: return location_cache[key]
     
-    coord_str = f"{round(lat, 4)}, {round(lon, 4)}"
-    if not geolocator: return coord_str
+    if not geolocator: return None
     
-    # 2. Try Geocoding (Aggressive Retry)
+    # 2. Try Geocoding (3 Retries)
     for _ in range(3): 
         try:
+            # 10s timeout
             loc = geolocator.reverse(f"{lat}, {lon}", exactly_one=True, language='en', timeout=10)
             if loc:
                 add = loc.raw.get('address', {})
-                # Priority: Neighborhood -> Suburb -> Road -> City
+                # Get specific area
                 name = (add.get('neighbourhood') or 
                         add.get('suburb') or 
                         add.get('village') or 
                         add.get('road') or 
-                        add.get('residential') or
-                        add.get('city_district'))
+                        add.get('residential'))
                 
                 city = (add.get('city') or 
                         add.get('town') or 
                         add.get('county') or 
                         add.get('state'))
                 
-                final_name = coord_str
                 if name and city: final_name = f"{name}, {city}"
                 elif name: final_name = name
                 elif city: final_name = city
+                else: final_name = None
                 
-                location_cache[key] = final_name
-                return final_name
+                if final_name:
+                    location_cache[key] = final_name
+                    return final_name
         except: 
             time.sleep(1)
             continue
             
-    return coord_str
+    return None # Return None if failed, so we keep the old name
 
 def calc_health(val):
     aqi = int((val.get('pm25', 0) * 2) + (val.get('pm10', 0) * 0.5))
     if aqi <= 100:
         return [
-            {"name": "General Well-being", "desc": "Air quality is satisfactory.", "prob": 5, "level": "Good", "recs": ["Ventilate your home freely.", "Enjoy outdoor activities.", "No special filtration needed."]},
-            {"name": "Respiratory Health", "desc": "No irritation expected.", "prob": 5, "level": "Good", "recs": ["Continue normal exercise.", "Deep breathing is safe.", "Enjoy the fresh air."]},
-            {"name": "Sensitive Groups", "desc": "People with allergies can enjoy outdoors.", "prob": 10, "level": "Low", "recs": ["Keep usual inhalers just in case.", "Monitor pollen levels.", "No masks required."]},
-            {"name": "Skin & Eye", "desc": "Clear visibility, no irritation.", "prob": 0, "level": "Low", "recs": ["No protective eyewear needed.", "Standard skincare.", "Use sunscreen."]}
+            {"name": "General Well-being", "desc": "Air quality is satisfactory. It is a great day to be active outside.", "prob": 5, "level": "Good", "recs": ["Ventilate your home freely.", "Enjoy outdoor activities.", "No special filtration needed."]},
+            {"name": "Respiratory Health", "desc": "No irritation or respiratory distress expected for the general population.", "prob": 5, "level": "Good", "recs": ["Continue normal exercise routines.", "Deep breathing exercises are safe.", "Enjoy the fresh air."]},
+            {"name": "Sensitive Groups", "desc": "People with asthma or allergies can typically enjoy outdoors.", "prob": 10, "level": "Low", "recs": ["Keep usual rescue inhalers just in case.", "Monitor local pollen levels.", "No masks required."]},
+            {"name": "Skin & Eye Health", "desc": "Clear visibility and low particulate matter mean no irritation.", "prob": 0, "level": "Low", "recs": ["No protective eyewear needed.", "Standard skincare is sufficient.", "Use sunscreen."]}
         ]
     elif aqi <= 200:
         return [
-            {"name": "Mild Irritation", "desc": "Sensitive people may feel throat tickle.", "prob": 40, "level": "Moderate", "recs": ["Limit prolonged exertion.", "Hydrate throat.", "Carry water."]},
-            {"name": "Asthma Risk", "desc": "May trigger mild asthma symptoms.", "prob": 50, "level": "Moderate", "recs": ["Keep inhalers accessible.", "Avoid heavy traffic areas.", "Watch for wheezing."]},
-            {"name": "Sinus Pressure", "desc": "Minor nasal congestion possible.", "prob": 30, "level": "Moderate", "recs": ["Consider saline rinse.", "Shower after outdoors.", "Close windows."]},
-            {"name": "Fatigue", "desc": "Slight reduction in oxygen efficiency.", "prob": 25, "level": "Low", "recs": ["Take more breaks.", "Avoid heavy cardio.", "Monitor heart rate."]}
+            {"name": "Mild Respiratory Irritation", "desc": "Sensitive individuals may experience coughing or minor throat irritation.", "prob": 40, "level": "Moderate", "recs": ["Limit prolonged outdoor exertion.", "Hydrate frequently to soothe throat.", "Carry water when walking outside."]},
+            {"name": "Asthma Aggravation", "desc": "Air quality is acceptable for most, but may trigger mild asthma symptoms.", "prob": 50, "level": "Moderate", "recs": ["Keep inhalers accessible at all times.", "Avoid jogging near heavy traffic.", "Watch for wheezing symptoms."]},
+            {"name": "Sinus Pressure", "desc": "Particulates may cause minor nasal congestion or sinus pressure.", "prob": 30, "level": "Moderate", "recs": ["Consider a saline nasal rinse.", "Shower after coming indoors.", "Keep windows closed during peak traffic."]},
+            {"name": "Fatigue Levels", "desc": "Slight reduction in oxygen efficiency may cause quicker tiredness.", "prob": 25, "level": "Low", "recs": ["Take more breaks during exercise.", "Avoid heavy cardio outdoors.", "Monitor heart rate during activity."]}
         ]
     elif aqi <= 300:
         return [
-            {"name": "Bronchitis Risk", "desc": "Inflamed bronchial tubes, heavy coughing.", "prob": 65, "level": "High", "recs": ["Avoid outdoor activity.", "Wear N95 mask.", "Use air purifier."]},
-            {"name": "Cardiac Stress", "desc": "Elevated blood pressure.", "prob": 50, "level": "High", "recs": ["Heart patients stay indoors.", "Low salt diet.", "Monitor BP."]},
-            {"name": "Allergies", "desc": "Worsened allergy symptoms.", "prob": 70, "level": "High", "recs": ["Take antihistamines.", "Seal windows.", "Change clothes."]},
-            {"name": "Eye Irritation", "desc": "Burning or watery eyes.", "prob": 60, "level": "Moderate", "recs": ["Use eye drops.", "Wear sunglasses.", "Don't rub eyes."]}
+            {"name": "Bronchitis Risk", "desc": "High PM levels can inflame bronchial tubes causing heavy coughing.", "prob": 65, "level": "High", "recs": ["Avoid all outdoor physical activity.", "Wear an N95 mask if outside.", "Use an air purifier in the bedroom."]},
+            {"name": "Cardiac Stress", "desc": "Fine particles entering the bloodstream can slightly elevate blood pressure.", "prob": 50, "level": "High", "recs": ["Heart patients should stay indoors.", "Avoid salty foods to keep BP low.", "Monitor blood pressure regularly."]},
+            {"name": "Allergic Rhinitis", "desc": "High pollution can mimic or worsen severe allergy symptoms.", "prob": 70, "level": "High", "recs": ["Take antihistamines if prescribed.", "Keep windows sealed tight.", "Change clothes immediately after entering."]},
+            {"name": "Eye Irritation", "desc": "Dust and chemicals in the air may cause burning or watery eyes.", "prob": 60, "level": "Moderate", "recs": ["Use lubricating eye drops.", "Wear sunglasses to block dust.", "Avoid rubbing eyes with unwashed hands."]}
         ]
     elif aqi <= 400:
         return [
-            {"name": "Lung Infection", "desc": "Compromised lung immunity.", "prob": 80, "level": "Severe", "recs": ["Strictly avoid outdoors.", "Wear N99 mask.", "Steam inhalation."]},
-            {"name": "Ischemic Risk", "desc": "Reduced heart oxygen.", "prob": 75, "level": "Severe", "recs": ["Elderly stay inside.", "No physical labor.", "Watch chest pain."]},
-            {"name": "Hypoxia", "desc": "Headaches and dizziness.", "prob": 60, "level": "High", "recs": ["Use oxygen/plants.", "Calm breathing.", "No smoking."]},
-            {"name": "Pneumonia", "desc": "Vulnerable to bacteria.", "prob": 50, "level": "High", "recs": ["Wash hands often.", "Avoid crowds.", "Consult doctor."]}
+            {"name": "Acute Respiratory Infection", "desc": "Immune system in lungs is compromised, increasing infection risk.", "prob": 80, "level": "Severe", "recs": ["Strictly avoid outdoor exposure.", "Wear N95/N99 masks if transit is necessary.", "Steam inhalation twice a day."]},
+            {"name": "Ischemic Heart Risk", "desc": "Reduced oxygen supply to the heart due to pollution stress.", "prob": 75, "level": "Severe", "recs": ["Elderly should remain strictly indoors.", "Avoid any strenuous physical labor.", "Seek help if experiencing chest heaviness."]},
+            {"name": "Hypoxia Symptoms", "desc": "Lower oxygen intake may lead to headaches and dizziness.", "prob": 60, "level": "High", "recs": ["Use indoor plants or oxygen concentrators.", "Practice shallow, calm breathing.", "Avoid smoking or incense indoors."]},
+            {"name": "Pneumonia Susceptibility", "desc": "Lungs are highly vulnerable to bacterial and viral attacks.", "prob": 50, "level": "High", "recs": ["Maintain strict hand hygiene.", "Stay away from dusty places.", "Consult a doctor for persistent cough."]}
         ]
     elif aqi <= 500:
         return [
-            {"name": "Lung Impairment", "desc": "Breathing difficulty for everyone.", "prob": 90, "level": "Critical", "recs": ["Do not go out.", "Wet towels on windows.", "Max air purifier."]},
-            {"name": "Stroke Risk", "desc": "Thickened blood.", "prob": 60, "level": "High", "recs": ["Hydrate heavily.", "Avoid stress.", "Emergency contacts ready."]},
-            {"name": "Inflammation", "desc": "Systemic body inflammation.", "prob": 85, "level": "Critical", "recs": ["Anti-inflammatory food.", "Rest fully.", "No frying."]},
-            {"name": "Pulmonary Edema", "desc": "Fluid in lungs.", "prob": 40, "level": "Severe", "recs": ["Medical care if breathing hard.", "Sleep elevated.", "Don't lie flat."]}
+            {"name": "Severe Lung Impairment", "desc": "Healthy people will experience reduced endurance and breathing difficulty.", "prob": 90, "level": "Critical", "recs": ["Do not go outside under any circumstances.", "Seal window gaps with wet towels.", "Run air purifiers on maximum speed."]},
+            {"name": "Cerebrovascular Risk", "desc": "Increased risk of stroke due to thickened blood and inflammation.", "prob": 60, "level": "High", "recs": ["Stay hydrated to keep blood thin.", "Avoid stress and sudden movements.", "Keep emergency contacts ready."]},
+            {"name": "Systemic Inflammation", "desc": "Pollutants entering blood trigger inflammation throughout the body.", "prob": 85, "level": "Critical", "recs": ["Consume anti-inflammatory foods (turmeric, berries).", "Rest as much as possible.", "Avoid cooking that produces smoke."]},
+            {"name": "Pulmonary Edema Risk", "desc": "Fluid buildup in air sacs due to toxic chemical irritation.", "prob": 40, "level": "Severe", "recs": ["Seek immediate medical care for breathing issues.", "Sleep with head elevated.", "Avoid lying flat if breathing is hard."]}
         ]
     else:
         return [
-            {"name": "ARDS", "desc": "Lung failure potential.", "prob": 95, "level": "Emergency", "recs": ["Evacuate area.", "Medical oxygen.", "N99 respirator."]},
-            {"name": "Cardiac Arrest", "desc": "Extreme heart stress.", "prob": 70, "level": "Emergency", "recs": ["Bed rest.", "Defibrillator ready.", "No exertion."]},
-            {"name": "Asphyxiation", "desc": "Toxic choking feeling.", "prob": 90, "level": "Emergency", "recs": ["Clean room.", "Double filtration.", "Limit talking."]},
-            {"name": "Lung Damage", "desc": "Permanent scarring risk.", "prob": 80, "level": "Critical", "recs": ["See pulmonologist.", "Lung detox.", "Relocate."]}
+            {"name": "Acute Respiratory Distress (ARDS)", "desc": "Life-threatening lung failure potential. Oxygen absorption blocked.", "prob": 95, "level": "Emergency", "recs": ["Evacuate to a cleaner area if possible.", "Use medical-grade oxygen if prescribed.", "Wear N99/P100 respirator if moving."]},
+            {"name": "Cardiac Arrest Risk", "desc": "Extremely high stress on heart muscles due to toxic air.", "prob": 70, "level": "Emergency", "recs": ["Absolute bed rest suggested.", "Keep defibrillator/emergency services on speed dial.", "Do not exert yourself in any way."]},
+            {"name": "Asphyxiation Hazard", "desc": "Air is chemically toxic. Feeling of choking or suffocation.", "prob": 90, "level": "Emergency", "recs": ["Create a 'clean room' with no leaks.", "Use double-filtration air purifiers.", "Limit talking to conserve oxygen."]},
+            {"name": "Permanent Lung Damage", "desc": "Long-term scarring of lung tissue (Fibrosis) possible.", "prob": 80, "level": "Critical", "recs": ["Follow up with a pulmonologist immediately.", "Start long-term lung detox measures.", "Consider relocation if conditions persist."]}
         ]
 
 # --- FRONTEND TEMPLATE ---
@@ -177,9 +176,9 @@ body{font-family:'Inter',sans-serif;background:var(--bg);color:var(--text);paddi
 .stat-row{display:flex;gap:15px;margin-top:25px;} .stat{flex:1;background:#fafaf9;padding:15px;text-align:center;border-radius:10px;font-weight:700;}
 .risk-card{border:1px solid #e5e7eb;border-radius:12px;padding:20px;border-left:5px solid var(--dang);margin-bottom:15px;background:#fff;}
 .hist-table{width:100%;border-collapse:collapse;} .hist-table th{text-align:left;padding:10px;border-bottom:2px solid #eee;} .hist-table td{padding:10px;border-bottom:1px solid #eee;}
-.upload-card{border:2px dashed #cbd5e1;padding:30px;text-align:center;border-radius:15px;cursor:pointer;transition:0.2s;background:#fafaf9;display:flex;flex-direction:column;align-items:center;gap:10px;} 
-.upload-card:hover{border-color:var(--prim);background:#f1f5f9;}
-.upload-icon{font-size:2rem;color:#94a3b8;}
+.upload-card{border:2px dashed #cbd5e1;padding:40px;text-align:center;border-radius:15px;cursor:pointer;transition:0.2s;background:#fff;display:flex;flex-direction:column;align-items:center;gap:15px;} 
+.upload-card:hover{border-color:var(--prim);background:#f8fafc;}
+.upload-icon{font-size:2.5rem;color:#94a3b8;}
 .anl-header{display:flex;justify-content:space-between;align-items:center;margin-bottom:15px;}
 .sel-box{padding:8px;border-radius:8px;border:1px solid #ccc;font-family:inherit;}
 .upload-container{max-width:600px;margin:0 auto;}
@@ -295,7 +294,8 @@ body{font-family:'Inter',sans-serif;background:var(--bg);color:var(--text);paddi
   cTr=new Chart(ctx,{type:'line',data:{labels:f.map(x=>x.date),datasets:[{label:'Average AQI',data:f.map(x=>x.aqi),borderColor:'#0f172a',backgroundColor:'rgba(15,23,42,0.1)',fill:true,tension:0.3}]},options:{responsive:true,maintainAspectRatio:false}});
  }
  function upUI(d){
-  document.getElementById('aqi').innerText=d.aqi; document.getElementById('loc').innerText=d.location_name;
+  document.getElementById('aqi').innerText=d.aqi; 
+  document.getElementById('loc').innerText=d.location_name; // THIS WILL NOW SHOW CITY NAME
   document.getElementById('p1').innerText=d.pm1; document.getElementById('p2').innerText=d.pm25; document.getElementById('p10').innerText=d.pm10;
   
   let hDiv=document.getElementById('full-health'), mDiv=document.getElementById('mini-health');
@@ -355,8 +355,8 @@ def upload():
         avgs = {k: round(pd.DataFrame(filtered)[k].mean(), 1) for k in ['pm1','pm25','pm10','temp','hum']}
         aqi = int(avgs['pm25']*2 + avgs['pm10']*0.5)
         
-        # Get City Name
-        loc = get_city_name(filtered[0]['lat'], filtered[0]['lon'])
+        # Geocode Location
+        new_loc = get_city_name(filtered[0]['lat'], filtered[0]['lon'])
         
         history_log.insert(0, {"date":dt, "filename":f.filename, "status":"Success", "aqi": aqi})
         existing = next((x for x in historical_stats if x['date'] == dt), None)
@@ -364,7 +364,10 @@ def upload():
         else: historical_stats.append({"date": dt, "aqi": aqi})
         historical_stats.sort(key=lambda x: x['date'])
         
-        current_data.update({"aqi": aqi, "location_name": loc, **avgs, 
+        # Only update location if we found a valid name
+        final_loc = new_loc if new_loc else current_data['location_name']
+        
+        current_data.update({"aqi": aqi, "location_name": final_loc, **avgs, 
                              "health_risks": calc_health(avgs), 
                              "chart_data": {"aqi": [int(r['pm25']*2 + r['pm10']*0.5) for r in filtered], 
                                             "gps": [{"lat":r['lat'], "lon":r['lon']} for r in filtered]}})
@@ -376,8 +379,11 @@ def sensor():
     try:
         d = request.json
         aqi = int(d.get('pm25',0)*2 + d.get('pm10',0)*0.5)
-        if current_data['location_name'] == "Waiting for GPS..." or random.random() < 0.1:
-            current_data['location_name'] = get_city_name(d.get('lat',0), d.get('lon',0))
+        
+        # Location update attempt
+        new_loc = get_city_name(d.get('lat',0), d.get('lon',0))
+        if new_loc: current_data['location_name'] = new_loc
+            
         current_data.update(d)
         current_data['aqi'] = aqi
         current_data['health_risks'] = calc_health(current_data)
