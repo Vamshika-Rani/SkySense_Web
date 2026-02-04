@@ -10,7 +10,7 @@ import time
 try:
     from geopy.geocoders import Nominatim
     # Random User Agent to avoid blocking
-    geolocator = Nominatim(user_agent=f"skysense_final_v300_{random.randint(10000,99999)}")
+    geolocator = Nominatim(user_agent=f"skysense_final_gold_{random.randint(10000,99999)}")
 except ImportError:
     geolocator = None
 
@@ -71,6 +71,7 @@ def get_city_name(lat, lon):
     coord_str = f"{round(lat, 4)}, {round(lon, 4)}"
     if not geolocator: return coord_str
     
+    # Try getting name from backend (if not blocked)
     for _ in range(2): 
         try:
             loc = geolocator.reverse(f"{lat}, {lon}", exactly_one=True, language='en', timeout=5)
@@ -156,9 +157,9 @@ body{font-family:'Inter',sans-serif;background:var(--bg);color:var(--text);paddi
 .stat-row{display:flex;gap:15px;margin-top:25px;} .stat{flex:1;background:#fafaf9;padding:15px;text-align:center;border-radius:10px;font-weight:700;}
 .risk-card{border:1px solid #e5e7eb;border-radius:12px;padding:20px;border-left:5px solid var(--dang);margin-bottom:15px;background:#fff;}
 .hist-table{width:100%;border-collapse:collapse;} .hist-table th{text-align:left;padding:10px;border-bottom:2px solid #eee;} .hist-table td{padding:10px;border-bottom:1px solid #eee;}
-.upload-card{border:2px dashed #cbd5e1;padding:30px;text-align:center;border-radius:15px;cursor:pointer;transition:0.2s;background:#fafaf9;display:flex;flex-direction:column;align-items:center;gap:10px;} 
+.upload-card{border:2px dashed #cbd5e1;padding:40px;text-align:center;border-radius:15px;cursor:pointer;transition:0.2s;background:#fff;display:flex;flex-direction:column;align-items:center;gap:15px;} 
 .upload-card:hover{border-color:var(--prim);background:#f8fafc;}
-.upload-icon{font-size:2rem;color:#94a3b8;}
+.upload-icon{font-size:2.5rem;color:#94a3b8;}
 .anl-header{display:flex;align-items:center;margin-bottom:20px;gap:15px;}
 .sel-box{padding:8px;border-radius:8px;border:1px solid #ccc;font-family:inherit;}
 .upload-container{max-width:600px;margin:0 auto;}
@@ -348,8 +349,14 @@ def upload():
         for r in valid[1:]:
             if has_moved(r['lat'], r['lon']): filtered.append(r)
             
-        avgs = {k: round(pd.DataFrame(filtered)[k].mean(), 1) for k in ['pm1','pm25','pm10','temp','hum']}
-        aqi = int(avgs['pm25']*2 + avgs['pm10']*0.5)
+        # FIXED: Explicit column selection to prevent getting zeroes
+        pm1 = round(pd.DataFrame(filtered)['pm1'].mean(), 1) if 'pm1' in df.columns else 0
+        pm25 = round(pd.DataFrame(filtered)['pm25'].mean(), 1) if 'pm25' in df.columns else 0
+        pm10 = round(pd.DataFrame(filtered)['pm10'].mean(), 1) if 'pm10' in df.columns else 0
+        temp = round(pd.DataFrame(filtered)['temp'].mean(), 1) if 'temp' in df.columns else 0
+        hum = round(pd.DataFrame(filtered)['hum'].mean(), 1) if 'hum' in df.columns else 0
+        
+        aqi = int(pm25*2 + pm10*0.5)
         
         # NOTE: Backend location disabled to rely on frontend (prevents blocks)
         loc = "Updating..." 
@@ -360,14 +367,13 @@ def upload():
         else: historical_stats.append({"date": dt, "aqi": aqi})
         historical_stats.sort(key=lambda x: x['date'])
         
-        # Save last lat/lon for frontend lookup
+        # Save lat/lon for frontend lookup
         current_data.update({
-            "aqi": aqi, 
-            "location_name": loc, 
-            "lat": filtered[0]['lat'], 
-            "lon": filtered[0]['lon'],
-            **avgs, 
-            "health_risks": calc_health(avgs), 
+            "aqi": aqi, "location_name": loc, 
+            "lat": filtered[0]['lat'], "lon": filtered[0]['lon'],
+            "pm1": pm1, "pm25": pm25, "pm10": pm10, "temp": temp, "hum": hum,
+            "avg_pm1": pm1, "avg_pm25": pm25, "avg_pm10": pm10, # For export safety
+            "health_risks": calc_health({"pm25": pm25, "pm10": pm10}), 
             "chart_data": {"aqi": [int(r['pm25']*2 + r['pm10']*0.5) for r in filtered], 
                            "gps": [{"lat":r['lat'], "lon":r['lon']} for r in filtered]}
         })
@@ -395,6 +401,7 @@ def sensor():
 @app.route('/export/text')
 def export():
     d = current_data
+    # FIXED: Direct access to values (no .get() fallback that might pick 0)
     report = f"""==================================================
 SKYSENSE DETAILED AIR QUALITY REPORT
 ==================================================
@@ -404,11 +411,11 @@ Location: {d['location_name']} (Coords: {d.get('lat')}, {d.get('lon')})
 1. ENVIRONMENTAL AVERAGES
 -------------------------
 AQI Level: {d['aqi']}
-PM 1.0 : {d.get('avg_pm1', d.get('pm1', 0))} ug/m3
-PM 2.5 : {d.get('avg_pm25', d.get('pm25', 0))} ug/m3
-PM 10  : {d.get('avg_pm10', d.get('pm10', 0))} ug/m3
-Temp   : {d.get('avg_temp', d.get('temp', 0))} °C
-Humidity: {d.get('avg_hum', d.get('hum', 0))} %
+PM 1.0 : {d['pm1']} ug/m3
+PM 2.5 : {d['pm25']} ug/m3
+PM 10  : {d['pm10']} ug/m3
+Temp   : {d['temp']} °C
+Humidity: {d['hum']} %
 
 2. HEALTH RISKS & PRECAUTIONS
 -----------------------------"""
