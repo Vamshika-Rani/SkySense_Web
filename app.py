@@ -9,9 +9,8 @@ import time
 # --- SETUP ---
 try:
     from geopy.geocoders import Nominatim
-    from geopy.exc import GeocoderTimedOut, GeocoderServiceError
     # Random User Agent to prevent blocking
-    geolocator = Nominatim(user_agent=f"skysense_final_v99_{random.randint(10000,99999)}")
+    geolocator = Nominatim(user_agent=f"skysense_final_v100_{random.randint(10000,99999)}")
 except ImportError:
     geolocator = None
 
@@ -64,23 +63,39 @@ def normalize_columns(df):
 
 def get_city_name(lat, lon):
     if lat == 0 or lon == 0: return "No GPS Signal"
+    
+    # 1. Check Cache
     key = (round(lat, 3), round(lon, 3))
     if key in location_cache: return location_cache[key]
     
     coord_str = f"{round(lat, 4)}, {round(lon, 4)}"
     if not geolocator: return coord_str
     
+    # 2. Try Geocoding (Aggressive Fallback)
     try:
         for _ in range(2): 
             try:
                 loc = geolocator.reverse(f"{lat}, {lon}", exactly_one=True, language='en', timeout=8)
                 if loc:
                     add = loc.raw.get('address', {})
-                    area = add.get('neighbourhood') or add.get('suburb') or add.get('residential') or add.get('road')
-                    city = add.get('city') or add.get('town') or add.get('county')
-                    res = f"{area}, {city}" if area and city else (area or city or coord_str)
-                    location_cache[key] = res
-                    return res
+                    # Try getting ANY name, starting from most specific
+                    name = (add.get('neighbourhood') or 
+                            add.get('suburb') or 
+                            add.get('village') or 
+                            add.get('road') or 
+                            add.get('residential') or
+                            add.get('city') or 
+                            add.get('town') or 
+                            add.get('county') or 
+                            add.get('state'))
+                    
+                    if name:
+                        # Append City if we found a small area
+                        if name != add.get('city') and add.get('city'):
+                            name = f"{name}, {add.get('city')}"
+                        
+                        location_cache[key] = name
+                        return name
             except: time.sleep(1)
     except: pass
     return coord_str
@@ -89,45 +104,45 @@ def calc_health(val):
     aqi = int((val.get('pm25', 0) * 2) + (val.get('pm10', 0) * 0.5))
     if aqi <= 100:
         return [
-            {"name": "General Well-being", "desc": "Air quality is satisfactory. It is a great day to be active outside.", "prob": 5, "level": "Good", "recs": ["Ventilate your home freely.", "Enjoy outdoor activities.", "No special filtration needed."]},
-            {"name": "Respiratory Health", "desc": "No irritation or respiratory distress expected for the general population.", "prob": 5, "level": "Good", "recs": ["Continue normal exercise routines.", "Deep breathing exercises are safe.", "Enjoy the fresh air."]},
-            {"name": "Sensitive Groups", "desc": "People with asthma or allergies can typically enjoy outdoors.", "prob": 10, "level": "Low", "recs": ["Keep usual rescue inhalers just in case.", "Monitor local pollen levels.", "No masks required."]},
-            {"name": "Skin & Eye Health", "desc": "Clear visibility and low particulate matter mean no irritation.", "prob": 0, "level": "Low", "recs": ["No protective eyewear needed.", "Standard skincare is sufficient.", "Use sunscreen."]}
+            {"name": "General Well-being", "desc": "Air quality is satisfactory. Great day for outdoor activity.", "prob": 5, "level": "Good", "recs": ["Ventilate your home freely.", "Enjoy outdoor activities.", "No special filtration needed."]},
+            {"name": "Respiratory Health", "desc": "No irritation or respiratory distress expected.", "prob": 5, "level": "Good", "recs": ["Continue normal exercise.", "Deep breathing is safe.", "Enjoy the fresh air."]},
+            {"name": "Sensitive Groups", "desc": "People with allergies can enjoy outdoors.", "prob": 10, "level": "Low", "recs": ["Keep usual inhalers just in case.", "Monitor pollen levels.", "No masks required."]},
+            {"name": "Skin & Eye", "desc": "Clear visibility, no irritation.", "prob": 0, "level": "Low", "recs": ["No protective eyewear needed.", "Standard skincare.", "Use sunscreen."]}
         ]
     elif aqi <= 200:
         return [
-            {"name": "Mild Respiratory Irritation", "desc": "Sensitive individuals may experience coughing or minor throat irritation.", "prob": 40, "level": "Moderate", "recs": ["Limit prolonged outdoor exertion.", "Hydrate frequently to soothe throat.", "Carry water when walking outside."]},
-            {"name": "Asthma Aggravation", "desc": "Air quality is acceptable for most, but may trigger mild asthma symptoms.", "prob": 50, "level": "Moderate", "recs": ["Keep inhalers accessible at all times.", "Avoid jogging near heavy traffic.", "Watch for wheezing symptoms."]},
-            {"name": "Sinus Pressure", "desc": "Particulates may cause minor nasal congestion or sinus pressure.", "prob": 30, "level": "Moderate", "recs": ["Consider a saline nasal rinse.", "Shower after coming indoors.", "Keep windows closed during peak traffic."]},
-            {"name": "Fatigue Levels", "desc": "Slight reduction in oxygen efficiency may cause quicker tiredness.", "prob": 25, "level": "Low", "recs": ["Take more breaks during exercise.", "Avoid heavy cardio outdoors.", "Monitor heart rate during activity."]}
+            {"name": "Mild Irritation", "desc": "Sensitive people may feel throat tickle.", "prob": 40, "level": "Moderate", "recs": ["Limit prolonged exertion.", "Hydrate throat.", "Carry water."]},
+            {"name": "Asthma Risk", "desc": "May trigger mild asthma symptoms.", "prob": 50, "level": "Moderate", "recs": ["Keep inhalers accessible.", "Avoid heavy traffic areas.", "Watch for wheezing."]},
+            {"name": "Sinus Pressure", "desc": "Minor nasal congestion possible.", "prob": 30, "level": "Moderate", "recs": ["Consider saline rinse.", "Shower after outdoors.", "Close windows."]},
+            {"name": "Fatigue", "desc": "Slight reduction in oxygen efficiency.", "prob": 25, "level": "Low", "recs": ["Take more breaks.", "Avoid heavy cardio.", "Monitor heart rate."]}
         ]
     elif aqi <= 300:
         return [
-            {"name": "Bronchitis Risk", "desc": "High PM levels can inflame bronchial tubes causing heavy coughing.", "prob": 65, "level": "High", "recs": ["Avoid all outdoor physical activity.", "Wear an N95 mask if outside.", "Use an air purifier in the bedroom."]},
-            {"name": "Cardiac Stress", "desc": "Fine particles entering the bloodstream can slightly elevate blood pressure.", "prob": 50, "level": "High", "recs": ["Heart patients should stay indoors.", "Avoid salty foods to keep BP low.", "Monitor blood pressure regularly."]},
-            {"name": "Allergic Rhinitis", "desc": "High pollution can mimic or worsen severe allergy symptoms.", "prob": 70, "level": "High", "recs": ["Take antihistamines if prescribed.", "Keep windows sealed tight.", "Change clothes immediately after entering."]},
-            {"name": "Eye Irritation", "desc": "Dust and chemicals in the air may cause burning or watery eyes.", "prob": 60, "level": "Moderate", "recs": ["Use lubricating eye drops.", "Wear sunglasses to block dust.", "Avoid rubbing eyes with unwashed hands."]}
+            {"name": "Bronchitis Risk", "desc": "Inflamed bronchial tubes, heavy coughing.", "prob": 65, "level": "High", "recs": ["Avoid outdoor activity.", "Wear N95 mask.", "Use air purifier."]},
+            {"name": "Cardiac Stress", "desc": "Elevated blood pressure.", "prob": 50, "level": "High", "recs": ["Heart patients stay indoors.", "Low salt diet.", "Monitor BP."]},
+            {"name": "Allergies", "desc": "Worsened allergy symptoms.", "prob": 70, "level": "High", "recs": ["Take antihistamines.", "Seal windows.", "Change clothes."]},
+            {"name": "Eye Irritation", "desc": "Burning or watery eyes.", "prob": 60, "level": "Moderate", "recs": ["Use eye drops.", "Wear sunglasses.", "Don't rub eyes."]}
         ]
     elif aqi <= 400:
         return [
-            {"name": "Acute Respiratory Infection", "desc": "Immune system in lungs is compromised, increasing infection risk.", "prob": 80, "level": "Severe", "recs": ["Strictly avoid outdoor exposure.", "Wear N95/N99 masks if transit is necessary.", "Steam inhalation twice a day."]},
-            {"name": "Ischemic Heart Risk", "desc": "Reduced oxygen supply to the heart due to pollution stress.", "prob": 75, "level": "Severe", "recs": ["Elderly should remain strictly indoors.", "Avoid any strenuous physical labor.", "Seek help if experiencing chest heaviness."]},
-            {"name": "Hypoxia Symptoms", "desc": "Lower oxygen intake may lead to headaches and dizziness.", "prob": 60, "level": "High", "recs": ["Use indoor plants or oxygen concentrators.", "Practice shallow, calm breathing.", "Avoid smoking or incense indoors."]},
-            {"name": "Pneumonia Susceptibility", "desc": "Lungs are highly vulnerable to bacterial and viral attacks.", "prob": 50, "level": "High", "recs": ["Maintain strict hand hygiene.", "Stay away from dusty places.", "Consult a doctor for persistent cough."]}
+            {"name": "Lung Infection", "desc": "Compromised lung immunity.", "prob": 80, "level": "Severe", "recs": ["Strictly avoid outdoors.", "Wear N99 mask.", "Steam inhalation."]},
+            {"name": "Ischemic Risk", "desc": "Reduced heart oxygen.", "prob": 75, "level": "Severe", "recs": ["Elderly stay inside.", "No physical labor.", "Watch chest pain."]},
+            {"name": "Hypoxia", "desc": "Headaches and dizziness.", "prob": 60, "level": "High", "recs": ["Use oxygen/plants.", "Calm breathing.", "No smoking."]},
+            {"name": "Pneumonia", "desc": "Vulnerable to bacteria.", "prob": 50, "level": "High", "recs": ["Wash hands often.", "Avoid crowds.", "Consult doctor."]}
         ]
     elif aqi <= 500:
         return [
-            {"name": "Severe Lung Impairment", "desc": "Healthy people will experience reduced endurance and breathing difficulty.", "prob": 90, "level": "Critical", "recs": ["Do not go outside under any circumstances.", "Seal window gaps with wet towels.", "Run air purifiers on maximum speed."]},
-            {"name": "Cerebrovascular Risk", "desc": "Increased risk of stroke due to thickened blood and inflammation.", "prob": 60, "level": "High", "recs": ["Stay hydrated to keep blood thin.", "Avoid stress and sudden movements.", "Keep emergency contacts ready."]},
-            {"name": "Systemic Inflammation", "desc": "Pollutants entering blood trigger inflammation throughout the body.", "prob": 85, "level": "Critical", "recs": ["Consume anti-inflammatory foods (turmeric, berries).", "Rest as much as possible.", "Avoid cooking that produces smoke."]},
-            {"name": "Pulmonary Edema Risk", "desc": "Fluid buildup in air sacs due to toxic chemical irritation.", "prob": 40, "level": "Severe", "recs": ["Seek immediate medical care for breathing issues.", "Sleep with head elevated.", "Avoid lying flat if breathing is hard."]}
+            {"name": "Lung Impairment", "desc": "Breathing difficulty for everyone.", "prob": 90, "level": "Critical", "recs": ["Do not go out.", "Wet towels on windows.", "Max air purifier."]},
+            {"name": "Stroke Risk", "desc": "Thickened blood.", "prob": 60, "level": "High", "recs": ["Hydrate heavily.", "Avoid stress.", "Emergency contacts ready."]},
+            {"name": "Inflammation", "desc": "Systemic body inflammation.", "prob": 85, "level": "Critical", "recs": ["Anti-inflammatory food.", "Rest fully.", "No frying."]},
+            {"name": "Pulmonary Edema", "desc": "Fluid in lungs.", "prob": 40, "level": "Severe", "recs": ["Medical care if breathing hard.", "Sleep elevated.", "Don't lie flat."]}
         ]
     else:
         return [
-            {"name": "Acute Respiratory Distress (ARDS)", "desc": "Life-threatening lung failure potential. Oxygen absorption blocked.", "prob": 95, "level": "Emergency", "recs": ["Evacuate to a cleaner area if possible.", "Use medical-grade oxygen if prescribed.", "Wear N99/P100 respirator if moving."]},
-            {"name": "Cardiac Arrest Risk", "desc": "Extremely high stress on heart muscles due to toxic air.", "prob": 70, "level": "Emergency", "recs": ["Absolute bed rest suggested.", "Keep defibrillator/emergency services on speed dial.", "Do not exert yourself in any way."]},
-            {"name": "Asphyxiation Hazard", "desc": "Air is chemically toxic. Feeling of choking or suffocation.", "prob": 90, "level": "Emergency", "recs": ["Create a 'clean room' with no leaks.", "Use double-filtration air purifiers.", "Limit talking to conserve oxygen."]},
-            {"name": "Permanent Lung Damage", "desc": "Long-term scarring of lung tissue (Fibrosis) possible.", "prob": 80, "level": "Critical", "recs": ["Follow up with a pulmonologist immediately.", "Start long-term lung detox measures.", "Consider relocation if conditions persist."]}
+            {"name": "ARDS", "desc": "Lung failure potential.", "prob": 95, "level": "Emergency", "recs": ["Evacuate area.", "Medical oxygen.", "N99 respirator."]},
+            {"name": "Cardiac Arrest", "desc": "Extreme heart stress.", "prob": 70, "level": "Emergency", "recs": ["Bed rest.", "Defibrillator ready.", "No exertion."]},
+            {"name": "Asphyxiation", "desc": "Toxic choking feeling.", "prob": 90, "level": "Emergency", "recs": ["Clean room.", "Double filtration.", "Limit talking."]},
+            {"name": "Lung Damage", "desc": "Permanent scarring risk.", "prob": 80, "level": "Critical", "recs": ["See pulmonologist.", "Lung detox.", "Relocate."]}
         ]
 
 # --- FRONTEND TEMPLATE ---
@@ -157,10 +172,13 @@ body{font-family:'Inter',sans-serif;background:var(--bg);color:var(--text);paddi
 .stat-row{display:flex;gap:15px;margin-top:25px;} .stat{flex:1;background:#fafaf9;padding:15px;text-align:center;border-radius:10px;font-weight:700;}
 .risk-card{border:1px solid #e5e7eb;border-radius:12px;padding:20px;border-left:5px solid var(--dang);margin-bottom:15px;background:#fff;}
 .hist-table{width:100%;border-collapse:collapse;} .hist-table th{text-align:left;padding:10px;border-bottom:2px solid #eee;} .hist-table td{padding:10px;border-bottom:1px solid #eee;}
-.upload-card{border:2px dashed #cbd5e1;padding:40px;text-align:center;border-radius:15px;cursor:pointer;transition:0.2s;background:#fff;display:flex;flex-direction:column;align-items:center;gap:15px;} 
-.upload-card:hover{border-color:var(--prim);background:#f8fafc;}
-.upload-icon{font-size:2.5rem;color:#94a3b8;}
-.anl-grid{display:grid;grid-template-columns:250px 1fr;gap:25px;} /* ANALYTICS LAYOUT */
+.upload-card{border:2px dashed #cbd5e1;padding:30px;text-align:center;border-radius:15px;cursor:pointer;transition:0.2s;background:#fafaf9;display:flex;flex-direction:column;align-items:center;gap:10px;} 
+.upload-card:hover{border-color:var(--prim);background:#f1f5f9;}
+.upload-icon{font-size:2rem;color:#94a3b8;}
+/* FIXED ANALYTICS & UPLOAD LAYOUTS */
+.anl-header{display:flex;justify-content:space-between;align-items:center;margin-bottom:15px;}
+.sel-box{padding:8px;border-radius:8px;border:1px solid #ccc;font-family:inherit;}
+.upload-container{max-width:600px;margin:0 auto;}
 @keyframes fadeIn{from{opacity:0;transform:translateY(5px);}to{opacity:1;transform:translateY(0);}}
 </style>
 </head>
@@ -186,7 +204,7 @@ body{font-family:'Inter',sans-serif;background:var(--bg);color:var(--text);paddi
    <div class="card aqi-box">
     <h3>Live Air Quality</h3>
     <div class="aqi-val" id="aqi">--</div>
-    <div style="color:#666;margin-top:5px;font-weight:600;" id="loc">Waiting...</div>
+    <div style="color:#666;margin-top:5px;font-weight:600;font-size:1.1rem;" id="loc">Waiting...</div>
     <div class="stat-row">
      <div class="stat"><div id="p1">--</div><small>PM1.0</small></div>
      <div class="stat"><div id="p2">--</div><small>PM2.5</small></div>
@@ -205,21 +223,20 @@ body{font-family:'Inter',sans-serif;background:var(--bg);color:var(--text);paddi
  </div>
 
  <div id="anl" class="section">
-  <div class="anl-grid">
-   <div class="card" style="height:fit-content;">
-    <h3>Select Period</h3>
-    <label style="display:block;margin-top:15px;margin-bottom:5px;font-size:0.9rem;color:#666;">Time Range</label>
-    <select id="trendFilter" onchange="upTr()" style="width:100%;padding:10px;border-radius:8px;border:1px solid #ccc;">
-     <option value="7">Last 7 Days</option>
-     <option value="30">Last 30 Days</option>
-     <option value="120">Last 120 Days</option>
-     <option value="365">Last 1 Year</option>
-    </select>
-   </div>
-   <div class="card">
+  <div class="card">
+   <div class="anl-header">
     <h3>Historical Trends</h3>
-    <div style="height:500px;"><canvas id="chartTr"></canvas></div>
+    <div>
+     <label style="font-size:0.9rem;margin-right:10px;">Select Period:</label>
+     <select id="trendFilter" onchange="upTr()" class="sel-box">
+      <option value="7">Last 7 Days</option>
+      <option value="30">Last 30 Days</option>
+      <option value="120">Last 120 Days</option>
+      <option value="365">Last 1 Year</option>
+     </select>
+    </div>
    </div>
+   <div style="height:500px;"><canvas id="chartTr"></canvas></div>
   </div>
  </div>
 
@@ -234,9 +251,9 @@ body{font-family:'Inter',sans-serif;background:var(--bg);color:var(--text);paddi
  <div id="esp" class="section"><div class="card"><h3>Live Data Stream</h3><div id="logs" style="background:#000;color:#0f0;padding:15px;height:200px;overflow:auto;font-family:monospace;"></div></div></div>
 
  <div id="up" class="section">
-  <div class="card" style="max-width:600px;margin:0 auto;">
-   <h3>Upload Flight Data</h3>
-   <div style="margin-bottom:20px;">
+  <div class="card upload-container">
+   <h3 style="margin-bottom:20px;">Upload Flight Data</h3>
+   <div style="margin-bottom:20px;text-align:left;">
     <label style="display:block;margin-bottom:8px;font-weight:600;color:#64748b;">Select Flight Date</label>
     <input type="date" id="dt" style="width:100%;padding:12px;border:1px solid #cbd5e1;border-radius:10px;font-family:inherit;">
    </div>
