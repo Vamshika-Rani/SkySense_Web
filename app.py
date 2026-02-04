@@ -9,7 +9,7 @@ import time
 # --- SETUP ---
 try:
     from geopy.geocoders import Nominatim
-    geolocator = Nominatim(user_agent=f"skysense_final_v5_{random.randint(10000,99999)}")
+    geolocator = Nominatim(user_agent=f"skysense_final_v6_{random.randint(10000,99999)}")
 except ImportError:
     geolocator = None
 
@@ -158,6 +158,8 @@ body{font-family:'Inter',sans-serif;background:var(--bg);color:var(--text);paddi
 .upload-card{border:2px dashed #cbd5e1;padding:30px;text-align:center;border-radius:15px;cursor:pointer;transition:0.2s;background:#fafaf9;display:flex;flex-direction:column;align-items:center;gap:10px;} 
 .upload-card:hover{border-color:var(--prim);background:#f1f5f9;}
 .upload-icon{font-size:2rem;color:#94a3b8;}
+.card-head-row{display:flex;justify-content:space-between;align-items:center;margin-bottom:20px;}
+.sel-box{padding:8px;border-radius:8px;border:1px solid #ccc;font-family:inherit;}
 @keyframes fadeIn{from{opacity:0;transform:translateY(5px);}to{opacity:1;transform:translateY(0);}}
 </style>
 </head>
@@ -202,20 +204,17 @@ body{font-family:'Inter',sans-serif;background:var(--bg);color:var(--text);paddi
  </div>
 
  <div id="anl" class="section">
-  <div class="grid">
-   <div class="card" style="height:fit-content;">
-    <h3>Select Period</h3>
-    <select id="trendFilter" onchange="upTr()" style="width:100%;padding:10px;border-radius:8px;border:1px solid #ccc;margin-top:10px;">
+  <div class="card">
+   <div class="card-head-row">
+    <h3>Historical Trends</h3>
+    <select id="trendFilter" onchange="upTr()" class="sel-box">
      <option value="7">Last 7 Days</option>
      <option value="30">Last 30 Days</option>
      <option value="120">Last 120 Days</option>
      <option value="365">Last 1 Year</option>
     </select>
    </div>
-   <div class="card">
-    <h3>Historical Trends</h3>
-    <div style="height:400px;"><canvas id="chartTr"></canvas></div>
-   </div>
+   <div style="height:500px;"><canvas id="chartTr"></canvas></div>
   </div>
  </div>
 
