@@ -9,7 +9,9 @@ import time
 # --- SETUP ---
 try:
     from geopy.geocoders import Nominatim
-    geolocator = Nominatim(user_agent=f"skysense_final_v6_{random.randint(10000,99999)}")
+    from geopy.exc import GeocoderTimedOut, GeocoderServiceError
+    # Random User Agent to prevent blocking
+    geolocator = Nominatim(user_agent=f"skysense_final_v99_{random.randint(10000,99999)}")
 except ImportError:
     geolocator = None
 
@@ -155,11 +157,10 @@ body{font-family:'Inter',sans-serif;background:var(--bg);color:var(--text);paddi
 .stat-row{display:flex;gap:15px;margin-top:25px;} .stat{flex:1;background:#fafaf9;padding:15px;text-align:center;border-radius:10px;font-weight:700;}
 .risk-card{border:1px solid #e5e7eb;border-radius:12px;padding:20px;border-left:5px solid var(--dang);margin-bottom:15px;background:#fff;}
 .hist-table{width:100%;border-collapse:collapse;} .hist-table th{text-align:left;padding:10px;border-bottom:2px solid #eee;} .hist-table td{padding:10px;border-bottom:1px solid #eee;}
-.upload-card{border:2px dashed #cbd5e1;padding:30px;text-align:center;border-radius:15px;cursor:pointer;transition:0.2s;background:#fafaf9;display:flex;flex-direction:column;align-items:center;gap:10px;} 
-.upload-card:hover{border-color:var(--prim);background:#f1f5f9;}
-.upload-icon{font-size:2rem;color:#94a3b8;}
-.card-head-row{display:flex;justify-content:space-between;align-items:center;margin-bottom:20px;}
-.sel-box{padding:8px;border-radius:8px;border:1px solid #ccc;font-family:inherit;}
+.upload-card{border:2px dashed #cbd5e1;padding:40px;text-align:center;border-radius:15px;cursor:pointer;transition:0.2s;background:#fff;display:flex;flex-direction:column;align-items:center;gap:15px;} 
+.upload-card:hover{border-color:var(--prim);background:#f8fafc;}
+.upload-icon{font-size:2.5rem;color:#94a3b8;}
+.anl-grid{display:grid;grid-template-columns:250px 1fr;gap:25px;} /* ANALYTICS LAYOUT */
 @keyframes fadeIn{from{opacity:0;transform:translateY(5px);}to{opacity:1;transform:translateY(0);}}
 </style>
 </head>
@@ -204,17 +205,21 @@ body{font-family:'Inter',sans-serif;background:var(--bg);color:var(--text);paddi
  </div>
 
  <div id="anl" class="section">
-  <div class="card">
-   <div class="card-head-row">
-    <h3>Historical Trends</h3>
-    <select id="trendFilter" onchange="upTr()" class="sel-box">
+  <div class="anl-grid">
+   <div class="card" style="height:fit-content;">
+    <h3>Select Period</h3>
+    <label style="display:block;margin-top:15px;margin-bottom:5px;font-size:0.9rem;color:#666;">Time Range</label>
+    <select id="trendFilter" onchange="upTr()" style="width:100%;padding:10px;border-radius:8px;border:1px solid #ccc;">
      <option value="7">Last 7 Days</option>
      <option value="30">Last 30 Days</option>
      <option value="120">Last 120 Days</option>
      <option value="365">Last 1 Year</option>
     </select>
    </div>
-   <div style="height:500px;"><canvas id="chartTr"></canvas></div>
+   <div class="card">
+    <h3>Historical Trends</h3>
+    <div style="height:500px;"><canvas id="chartTr"></canvas></div>
+   </div>
   </div>
  </div>
 
@@ -229,13 +234,16 @@ body{font-family:'Inter',sans-serif;background:var(--bg);color:var(--text);paddi
  <div id="esp" class="section"><div class="card"><h3>Live Data Stream</h3><div id="logs" style="background:#000;color:#0f0;padding:15px;height:200px;overflow:auto;font-family:monospace;"></div></div></div>
 
  <div id="up" class="section">
-  <div class="card">
+  <div class="card" style="max-width:600px;margin:0 auto;">
    <h3>Upload Flight Data</h3>
-   <input type="date" id="dt" style="width:100%;padding:12px;margin-bottom:20px;border:1px solid #e2e8f0;border-radius:10px;font-family:inherit;">
+   <div style="margin-bottom:20px;">
+    <label style="display:block;margin-bottom:8px;font-weight:600;color:#64748b;">Select Flight Date</label>
+    <input type="date" id="dt" style="width:100%;padding:12px;border:1px solid #cbd5e1;border-radius:10px;font-family:inherit;">
+   </div>
    <label class="upload-card">
     <i class="fa-solid fa-cloud-arrow-up upload-icon"></i>
     <div id="upload-text" style="font-weight:600; font-size:1.1rem; color:#1e293b;">Click to Select CSV/Excel</div>
-    <div style="color:#64748b; font-size:0.9rem;">Supports .csv, .xlsx</div>
+    <div style="color:#64748b; font-size:0.9rem;">Supported formats: .csv, .xlsx</div>
     <input type="file" id="fIn" hidden>
    </label>
   </div>
