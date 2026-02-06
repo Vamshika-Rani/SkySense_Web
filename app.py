@@ -112,7 +112,6 @@ def get_city_name(lat, lon):
     return coord_str
 
 def calc_health(val):
-    # CHANGED: Now uses precise AQI calculation
     pm25 = val.get('pm25', 0)
     pm10 = val.get('pm10', 0)
     aqi = calculate_aqi(pm25, pm10)
@@ -282,7 +281,15 @@ body{font-family:'Inter',sans-serif;background:var(--bg);color:var(--text);paddi
 </div>
 <script>
  let cGps=null, cTr=null, hist=[], locCache={};
- function sw(id){ document.querySelectorAll('.section').forEach(x=>x.classList.remove('active')); document.getElementById(id).classList.add('active'); document.querySelectorAll('.tab-btn').forEach(x=>x.classList.remove('active')); event.target.classList.add('active'); if(id==='anl') upTr(); }
+ function sw(id){ 
+   document.querySelectorAll('.section').forEach(x=>x.classList.remove('active')); 
+   document.getElementById(id).classList.add('active'); 
+   document.querySelectorAll('.tab-btn').forEach(b => {
+     b.classList.remove('active');
+     if(b.getAttribute('onclick').includes("'"+id+"'")) b.classList.add('active');
+   });
+   if(id==='anl') upTr(); 
+ }
  document.getElementById('dt').valueAsDate=new Date();
  setInterval(()=>{ fetch('/api/data').then(r=>r.json()).then(d=>{ hist=d.historical_stats||[]; upUI(d); }); },3000);
  document.getElementById('fIn').addEventListener('change',async(e)=>{
@@ -344,7 +351,7 @@ body{font-family:'Inter',sans-serif;background:var(--bg);color:var(--text);paddi
    if(cGps)cGps.destroy();
    cGps=new Chart(ctx,{type:'bar',data:{labels:labs,datasets:[{label:'AQI Level',data:d.chart_data.aqi,backgroundColor:'#3b82f6',borderRadius:4}]},options:{indexAxis:'y',responsive:true,maintainAspectRatio:false,scales:{x:{beginAtZero:true}}}});
   }
-  document.getElementById('logs').innerText=d.esp32_log.join('\n');
+  document.getElementById('logs').innerText=d.esp32_log.join('\\n');
  }
 </script></body></html>
 """
