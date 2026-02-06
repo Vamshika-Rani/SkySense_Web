@@ -33,6 +33,32 @@ current_data = {
     "esp32_log": ["> System Initialized..."], "last_updated": "Never"
 }
 
+# --- PRECISE AQI CALCULATION (INDIAN STANDARD) ---
+def get_subindex_pm25(x):
+    if x <= 30: return x * 50 / 30
+    elif x <= 60: return 50 + (x - 30) * 50 / 30
+    elif x <= 90: return 100 + (x - 60) * 100 / 30
+    elif x <= 120: return 200 + (x - 90) * 100 / 30
+    elif x <= 250: return 300 + (x - 120) * 100 / 130
+    else: return 400 + (x - 250) * 100 / 130
+
+def get_subindex_pm10(x):
+    if x <= 50: return x
+    elif x <= 100: return 50 + (x - 50)
+    elif x <= 250: return 100 + (x - 100) * 100 / 150
+    elif x <= 350: return 200 + (x - 250) * 100 / 100
+    elif x <= 430: return 300 + (x - 350) * 100 / 80
+    else: return 400 + (x - 430) * 100 / 80
+
+def calculate_aqi(pm25, pm10):
+    """Calculates AQI based on Indian National Air Quality Index standards"""
+    try:
+        val_pm25 = get_subindex_pm25(float(pm25))
+        val_pm10 = get_subindex_pm10(float(pm10))
+        return int(max(val_pm25, val_pm10))
+    except:
+        return 0
+
 # --- BACKEND HELPERS ---
 def has_moved(lat, lon):
     gps = current_data['chart_data']['gps']
@@ -86,7 +112,11 @@ def get_city_name(lat, lon):
     return coord_str
 
 def calc_health(val):
-    aqi = int((val.get('pm25', 0) * 2) + (val.get('pm10', 0) * 0.5))
+    # CHANGED: Now uses precise AQI calculation
+    pm25 = val.get('pm25', 0)
+    pm10 = val.get('pm10', 0)
+    aqi = calculate_aqi(pm25, pm10)
+
     if aqi <= 100:
         return [
             {"name": "General Well-being", "desc": "Air quality is satisfactory. It is a great day to be active outside.", "prob": 5, "level": "Good", "recs": ["Ventilate your home freely.", "Enjoy outdoor activities.", "No special filtration needed."]},
@@ -314,7 +344,7 @@ body{font-family:'Inter',sans-serif;background:var(--bg);color:var(--text);paddi
    if(cGps)cGps.destroy();
    cGps=new Chart(ctx,{type:'bar',data:{labels:labs,datasets:[{label:'AQI Level',data:d.chart_data.aqi,backgroundColor:'#3b82f6',borderRadius:4}]},options:{indexAxis:'y',responsive:true,maintainAspectRatio:false,scales:{x:{beginAtZero:true}}}});
   }
-  document.getElementById('logs').innerText=d.esp32_log.join('\\n');
+  document.getElementById('logs').innerText=d.esp32_log.join('\n');
  }
 </script></body></html>
 """
@@ -342,21 +372,20 @@ def upload():
         f.seek(0)
         df = normalize_columns(read_file_safely(f))
         
-        valid = [r for i, r in df.head(100).iterrows() if r.get('lat',0) != 0]
+        # NOTE: Removed .head(100) to calculate AQI from the full file
+        valid = [r for i, r in df.iterrows() if r.get('lat',0) != 0]
         if not valid: raise ValueError("No GPS Data")
         
-        filtered = [valid[0]]
-        for r in valid[1:]:
-            if has_moved(r['lat'], r['lon']): filtered.append(r)
-            
-        # FIXED: Explicit column selection to prevent getting zeroes
-        pm1 = round(pd.DataFrame(filtered)['pm1'].mean(), 1) if 'pm1' in df.columns else 0
-        pm25 = round(pd.DataFrame(filtered)['pm25'].mean(), 1) if 'pm25' in df.columns else 0
-        pm10 = round(pd.DataFrame(filtered)['pm10'].mean(), 1) if 'pm10' in df.columns else 0
-        temp = round(pd.DataFrame(filtered)['temp'].mean(), 1) if 'temp' in df.columns else 0
-        hum = round(pd.DataFrame(filtered)['hum'].mean(), 1) if 'hum' in df.columns else 0
+        # Calculate stats from ALL valid rows to match the true average
+        df_valid = pd.DataFrame(valid)
+        pm1 = round(df_valid['pm1'].mean(), 1) if 'pm1' in df_valid.columns else 0
+        pm25 = round(df_valid['pm25'].mean(), 1) if 'pm25' in df_valid.columns else 0
+        pm10 = round(df_valid['pm10'].mean(), 1) if 'pm10' in df_valid.columns else 0
+        temp = round(df_valid['temp'].mean(), 1) if 'temp' in df_valid.columns else 0
+        hum = round(df_valid['hum'].mean(), 1) if 'hum' in df_valid.columns else 0
         
-        aqi = int(pm25*2 + pm10*0.5)
+        # Use proper Indian Standard AQI Formula
+        aqi = calculate_aqi(pm25, pm10)
         
         # NOTE: Backend location disabled to rely on frontend (prevents blocks)
         loc = "Updating..." 
@@ -367,15 +396,23 @@ def upload():
         else: historical_stats.append({"date": dt, "aqi": aqi})
         historical_stats.sort(key=lambda x: x['date'])
         
-        # Save lat/lon for frontend lookup
+        # Filter logic is ONLY for the chart points to avoid clutter
+        filtered_for_chart = [valid[0]]
+        for r in valid[1:]:
+            if has_moved(r['lat'], r['lon']): filtered_for_chart.append(r)
+
+        # Save data
         current_data.update({
             "aqi": aqi, "location_name": loc, 
-            "lat": filtered[0]['lat'], "lon": filtered[0]['lon'],
+            "lat": valid[0]['lat'], "lon": valid[0]['lon'],
             "pm1": pm1, "pm25": pm25, "pm10": pm10, "temp": temp, "hum": hum,
-            "avg_pm1": pm1, "avg_pm25": pm25, "avg_pm10": pm10, # For export safety
+            "avg_pm1": pm1, "avg_pm25": pm25, "avg_pm10": pm10, 
             "health_risks": calc_health({"pm25": pm25, "pm10": pm10}), 
-            "chart_data": {"aqi": [int(r['pm25']*2 + r['pm10']*0.5) for r in filtered], 
-                           "gps": [{"lat":r['lat'], "lon":r['lon']} for r in filtered]}
+            "chart_data": {
+                # Calculate individual AQI for each chart point using the correct formula
+                "aqi": [calculate_aqi(r['pm25'], r['pm10']) for r in filtered_for_chart], 
+                "gps": [{"lat":r['lat'], "lon":r['lon']} for r in filtered_for_chart]
+            }
         })
         return jsonify({"message": "OK", "data": current_data})
     except Exception as e: return jsonify({"error": str(e)}), 500
@@ -384,8 +421,9 @@ def upload():
 def sensor():
     try:
         d = request.json
-        aqi = int(d.get('pm25',0)*2 + d.get('pm10',0)*0.5)
-        # Store lat/lon for frontend to resolve
+        # Use proper AQI Formula for live sensor data
+        aqi = calculate_aqi(d.get('pm25',0), d.get('pm10',0))
+        
         current_data.update(d)
         current_data['aqi'] = aqi
         current_data['health_risks'] = calc_health(current_data)
@@ -401,7 +439,6 @@ def sensor():
 @app.route('/export/text')
 def export():
     d = current_data
-    # FIXED: Direct access to values (no .get() fallback that might pick 0)
     report = f"""==================================================
 SKYSENSE DETAILED AIR QUALITY REPORT
 ==================================================
